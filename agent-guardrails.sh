@@ -104,6 +104,31 @@ ALLOW=(
   "Bash(tsc *)" "Bash(tsx *)" "Bash(ts-node *)" "Bash(eslint *)"
   "Bash(prettier *)" "Bash(jest *)" "Bash(vitest *)" "Bash(playwright *)"
   "Bash(biome *)" "Bash(esbuild *)" "Bash(vite *)" "Bash(turbo *)"
+  "Bash(deno *)"
+
+  # ---- bundlers & compilers ----
+  "Bash(babel *)" "Bash(babel-node *)" "Bash(webpack *)" "Bash(webpack-cli *)"
+  "Bash(rollup *)" "Bash(parcel *)" "Bash(swc *)" "Bash(rspack *)" "Bash(tsup *)"
+  "Bash(rolldown *)" "Bash(microbundle *)"
+
+  # ---- frontend frameworks ----
+  # React itself has no CLI — this is the tooling around it. Most React work
+  # already runs via `npm run <script>`, which the package managers cover.
+  "Bash(next *)" "Bash(react-scripts *)" "Bash(craco *)" "Bash(remix *)"
+  "Bash(astro *)" "Bash(gatsby *)" "Bash(vue *)" "Bash(vue-cli-service *)"
+  "Bash(nuxt *)" "Bash(nuxi *)" "Bash(svelte-kit *)" "Bash(ng *)"
+  "Bash(storybook *)" "Bash(cypress *)" "Bash(expo *)"
+
+  # ---- monorepo tooling ----
+  "Bash(nx *)" "Bash(lerna *)" "Bash(changeset *)" "Bash(rush *)"
+
+  # ---- npx carve-outs ----
+  # Bare `npx` is not allowlisted (it executes arbitrary remote packages), so
+  # the common local-binary invocations are named explicitly instead.
+  "Bash(npx next *)" "Bash(npx storybook *)" "Bash(npx cypress *)"
+  "Bash(npx tsc *)" "Bash(npx eslint *)" "Bash(npx prettier *)"
+  "Bash(npx vitest *)" "Bash(npx jest *)" "Bash(npx vite *)"
+  "Bash(npx webpack *)" "Bash(npx babel *)" "Bash(npx tsx *)"
 
   # ---- python ----
   "Bash(python *)" "Bash(python3 *)" "Bash(pytest *)" "Bash(tox *)"
@@ -245,6 +270,12 @@ ASK=(
   "Bash(rails db:drop *)" "Bash(rails db:reset *)" "Bash(rails destroy *)"
   "Bash(rake db:drop *)" "Bash(rake db:reset *)"
   "Bash(dotnet nuget add source *)"   # adds a package feed — supply chain
+  # The npx-equivalents. These fetch and execute arbitrary remote packages
+  # exactly as npx does, and would otherwise slip through the broad
+  # npm/pnpm/yarn/bun allows above. Narrower ask beats broader allow.
+  "Bash(npm exec *)" "Bash(pnpm dlx *)" "Bash(yarn dlx *)" "Bash(bun x *)"
+  # Reaches Expo's build servers (and can cost money).
+  "Bash(eas build *)" "Bash(expo login *)"
   "Bash(git reset --hard *)" "Bash(git clean *)"
   "Bash(git rebase *)" "Bash(git filter-branch *)"
   "Bash(aws *)" "Bash(gcloud *)" "Bash(az *)"
@@ -321,6 +352,7 @@ DENY=(
   # Package registries and their credentials — same class as npm publish.
   "Bash(gem push *)" "Bash(gem signin *)" "Bash(gem owner *)" "Bash(gem yank *)"
   "Bash(dotnet nuget push *)" "Bash(nuget push *)" "Bash(nuget setapikey *)"
+  "Bash(expo publish *)" "Bash(eas submit *)" "Bash(npm adduser *)"
   "Bash(curl * | sh)" "Bash(curl * | bash)" "Bash(wget * | sh)"
   "Read(//home/**/.ssh/**)" "Read(//home/**/.aws/credentials)"
   "Read(//home/**/.config/gcloud/**)" "Read(//**/.env.production)"
