@@ -7,12 +7,17 @@ For humans and for coding agents. If you are an agent working in this repo, read
 Two shell scripts and some policy templates.
 
 ```
-agent-guardrails.sh              entry point — rule lists, translation, writers
+agent-guardrails.sh              entry point — rule lists, translation, writers, removers
 hooks/git-push-guard.sh          the PreToolUse hook, shared by Claude and Codex
-enterprise/                      drop-in policy files for admins
+enterprise/                      drop-in policy files for admins (generated, see below)
+.guardrails-protected            this repo's own branch exemption (!main)
 ```
 
-`agent-guardrails.sh` holds the rule lists (`ALLOW`, `ASK`, `DENY`) as bash arrays near the top, a `to_agy` translator, and three writer functions (`write_claude`, `write_codex`, `write_agy`). The guard is a standalone script that reads hook JSON on stdin and writes a decision to stdout.
+`agent-guardrails.sh` holds the rule lists (`ALLOW`, `ASK`, `DENY`) as bash arrays near the top, a `to_agy` translator, three writers (`write_claude`, `write_codex`, `write_agy`) and three removers (`unwrite_*`) behind `--uninstall`. The guard is a standalone script that reads hook JSON on stdin and writes a decision to stdout.
+
+`enterprise/claude-managed-settings.json` is **generated** — regenerate it with `./agent-guardrails.sh --print --managed | jq '.claude' > enterprise/claude-managed-settings.json` in the same PR as any rule change, or it silently drifts from the script.
+
+The README quotes rule counts in **seven** places (the intro, the sample output block, three section headings, and two rows of the capability table). All of them must move together when you change the lists. `./agent-guardrails.sh --print | jq '{a:(.claude.permissions.allow|length),k:(.claude.permissions.ask|length),d:(.claude.permissions.deny|length),agy:(.agy.permissions.allow|length)}'` gives you the authoritative numbers.
 
 ## Ground rules
 
@@ -21,6 +26,45 @@ enterprise/                      drop-in policy files for admins
 **Never widen the allowlist casually.** A rule earns `allow` only if it is local, reversible, doesn't publish anything outward, and doesn't escalate privilege. When unsure, `ask` is the right answer — prompt fatigue is a worse outcome than a data breach, but only slightly.
 
 **Don't claim a capability you haven't verified in the binary.** The three harnesses differ in ways that are not documented anywhere. See below.
+
+## Rule ordering — the thing that will bite you
+
+Precedence is **deny > ask > allow**, and it does not consider specificity. Two consequences, one fatal and one useful:
+
+**A broader `ask` silently kills a narrower `allow`.** `Bash(npx *)` in `ASK` swallows `Bash(npx playwright *)` in `ALLOW` — the allow rule becomes dead weight and nobody notices. This has been hit twice for real: `npx` vs `npx playwright`, and `ansible-playbook *` vs `ansible-playbook --check *`. The fix is never to rely on precedence: **do not create the overlap**. Leave the broad case unlisted instead — unlisted already prompts, so the safety outcome is identical with none of the shadowing.
+
+**A narrower `ask` over a broader `allow` is the intended pattern**, and it works under any precedence model. This is how every infrastructure toolchain is built: allow `terraform *`, then ask `terraform apply *`. Same for `deny` over `ask` — `pveum *` asks, `pveum user delete *` denies.
+
+Matching is **word-boundary aware**: `Bash(ansible *)` does not match `ansible-lint`, and `Bash(gh release delete *)` does not match `gh release delete-asset`. Both of those are load-bearing. Verify with this, which must print `clean` before you open a PR:
+
+```bash
+./agent-guardrails.sh --print > /tmp/p.json
+python3 - <<'EOF'
+import json,re
+d=json.load(open('/tmp/p.json'))['claude']['permissions']
+inner=lambda r:(re.match(r'^\w+\((.*)\)$',r) or [None,None])[1]
+pfx=lambda r: r[:-1] if r.endswith('*') else r+' '   # keeps the word boundary
+A=[inner(r) for r in d['allow'] if r.startswith('Bash(')]
+K=[inner(r) for r in d['ask']   if r.startswith('Bash(')]
+D=[inner(r) for r in d['deny']  if r.startswith('Bash(')]
+bad=[(a,al) for a in K for al in A if al!=a and pfx(al).startswith(pfx(a))]
+print("ask-shadows-allow:", bad if bad else "clean")
+for x,y,nx,ny in (('allow','ask',A,K),('allow','deny',A,D),('ask','deny',K,D)):
+    print(f"  dupes {x}/{y}: {set(nx)&set(ny) or 'none'}")
+EOF
+```
+
+## Gates vs boundaries
+
+Be honest in the README about which is which. A **boundary** cannot be crossed. A **gate** catches the common invocation and is defeated by a rewrite. Almost everything here is a gate:
+
+- `Bash(curl * | sh)` — prefix matching is not a parser
+- `psql`, `mysql`, `mongosh` — the destructive part lives inside the query string, which is why those clients sit in `ask` wholesale rather than being split by verb
+- `officecli batch` — carries removals in its stdin payload, around the `remove` gate
+- `npm run`, `npm install` postinstall — arbitrary execution from package.json
+- `redis-cli flushall` denies are case-sensitive; redis commands are not
+
+When you add a rule whose gate leaks, say so in **Honest limitations** rather than implying containment. An allowlist reduces prompt fatigue for trusted toolchains; it is not a sandbox, and the README must never suggest otherwise.
 
 ## Harness constraints you must respect
 
@@ -113,13 +157,35 @@ Confirm, on the result: existing keys survive (`model`, `theme`, other hooks), c
 
 **4. Stale-path self-healing.** Pre-seed a config with a guard entry pointing at an old path and confirm the writer replaces it rather than appending a second one. This was a real bug; keep it fixed.
 
+**5. Branch exemptions.** The guard reads `<repo>/.guardrails-protected` and `~/.claude/protected-branches.txt`; a leading `!` exempts a pattern and beats every protection rule. Confirm `!main` in a repo-local file flips `git push origin main` from deny to allow while `develop` and `release/*` stay denied, and that deleting the file restores the default.
+
+Note that `CLAUDE_PROTECTED_BRANCHES` only works when set in the **agent process's own environment** — exported before launching the CLI, or via `env` in `settings.json`. An inline `CLAUDE_PROTECTED_BRANCHES=… git push` does nothing, because the harness spawns the hook separately and it never sees a prefix that applies only to the command being inspected. The README documented the inline form as working for one commit before this was caught. Do not reintroduce it.
+
+**6. Uninstall round-trip.** Take a pristine config, install **twice**, then `--uninstall`, and diff against the pristine copy — it must come back set-identical, with hooks, model and theme intact. Array order will differ because install sorts via `unique`; compare with `jq -S '.permissions.allow|sort'`.
+
+Uninstall subtracts from the same `ALLOW`/`ASK`/`DENY` arrays the writers use, so a rule you add is removed automatically with no extra work — but only if you add it to those arrays rather than hard-coding it in a writer. Do not hard-code rules in writers. Also confirm `--uninstall` is a clean no-op on a config that never had it installed.
+
 ## Adding rules
 
 Edit the `ALLOW` / `ASK` / `DENY` arrays. Keep them grouped by toolchain with the existing comment headers, and keep entries alphabetical within a group where it doesn't fight the grouping.
 
 Claude syntax is the source of truth; `to_agy` translates. If you add a rule form `to_agy` doesn't handle (anything that isn't `Bash(…)` or `Read(…)`), extend the translator in the same PR — a silently-dropped rule is worse than a missing one.
 
-Do not add `Bash(git push *)` to `ALLOW`. That defeats the guard, which is the entire point of the project.
+### Classifying a new toolchain
+
+Ask where the damage lands, then pick the shape:
+
+| the tool | shape |
+|---|---|
+| local, reversible, no network (`pytest`, `gcc`, `sqlite3`) | allow broadly |
+| dangerous verb is the **first token** (`terraform`, `kubectl`, `qm`) | allow broadly, then `ask` the specific verbs |
+| dangerous part is **inside an argument** (`psql`, `mongosh`) | `ask` wholesale — a verb split is not possible |
+| publishes an artifact or mutates credentials (`npm publish`, `gh secret`, `docker push`) | `deny` — an agent should not be able to do this at all |
+| fetches and executes remote code (`npx`, `gh extension install`, `cargo install`) | `ask` |
+
+Two hard rules. **Do not add `Bash(git push *)` to `ALLOW`** — that defeats the guard, which is the entire point of the project. And **do not add a bare shell** (`Bash(bash *)`, `Bash(sh *)`): `bash -c '<anything>'` makes every other rule in the file meaningless.
+
+When you add a toolchain, update the README's allow/ask/deny tables and all seven rule counts, regenerate `enterprise/claude-managed-settings.json`, and run the shadow checker.
 
 ## Style
 
