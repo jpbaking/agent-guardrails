@@ -83,6 +83,15 @@ ALLOW=(
   "Bash(kotlin *)" "Bash(kotlinc *)" "Bash(kotlinc-jvm *)" "Bash(ktlint *)"
   "Bash(detekt *)" "Bash(kapt *)"
 
+  # ---- groovy ----
+  # Spock is deliberately absent: it ships no CLI. Spock specs run through
+  # `gradle test` / `mvn test`, which the build-tool rules above already cover
+  # (including `./gradlew test --tests "*Spec"`). Nothing to add for it.
+  # `grape` resolves and downloads jars — allowed on the same footing as
+  # `pip install` and `npm install`.
+  "Bash(groovy *)" "Bash(groovyc *)" "Bash(groovysh *)" "Bash(groovyConsole *)"
+  "Bash(grape *)" "Bash(grails *)" "Bash(codenarc *)" "Bash(spotless *)"
+
   # ---- dotnet ----
   # `dotnet publish` builds a deployable folder locally — it does NOT publish to
   # a registry. That is `dotnet nuget push`, which is denied.

@@ -4,7 +4,7 @@
 
 Coding agents are fast right up until they aren't. Every `npm test`, every `git diff`, every `pytest -k foo` stops and waits for you to click yes. So people reach for the bypass flag — and enterprise admins, reasonably, turn it off.
 
-`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~375 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that refuses to push to `main`.
+`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~385 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that refuses to push to `main`.
 
 One command, all three agent CLIs:
 
@@ -18,7 +18,7 @@ scope: global (user-level)
   claude  ~/.claude/settings.json  (+guard)
   codex   ~/.codex/hooks.json  (guard only, deny-only mode)
   agy     ~/.gemini/antigravity-cli/settings.json
-allow=376 ask=126 deny=62
+allow=384 ask=126 deny=62
 ```
 
 ---
@@ -31,13 +31,14 @@ An allowlist is a different conversation. It's specific, it's reviewable, and it
 
 ## What you get
 
-**Auto-approved (376 rules)**
+**Auto-approved (384 rules)**
 
 | | |
 |---|---|
 | git | inspection and local mutation — `status`, `diff`, `log`, `add`, `commit`, `stash`, `fetch`, `merge` |
 | jvm | `gradle`/`./gradlew`, `mvn`/`./mvnw`/`mvnd`, `java`, `javac`, `jar`, `jshell`, `jcmd`/`jstack`/`jmap`, `spring` |
 | kotlin | `kotlin`, `kotlinc`, `ktlint`, `detekt` |
+| groovy | `groovy`, `groovyc`, `groovysh`, `grape`, `grails`, `codenarc`, `spotless` — Spock specs run via `gradle test`/`mvn test`, already covered |
 | dotnet | `dotnet` (build/test/run/restore/format/publish), `msbuild`, `csharpier` |
 | ruby | `ruby`, `gem`, `bundle`, `rake`, `rspec`, `rubocop`, `rails`, `irb`, `puma`, `sidekiq` |
 | node | `node`, `deno`, `npm`, `yarn`, `pnpm`, `bun`, `nvm`, `corepack` — including `npm run <script>` |
@@ -132,9 +133,9 @@ This is the part other tools gloss over. Each CLI's capabilities were determined
 
 | | allowlist | push guard | verified against |
 |---|---|---|---|
-| **Claude Code** | 376 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
+| **Claude Code** | 384 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
 | **Codex** | **none** — no allowlist mechanism exists | **deny only** | `0.145.0` |
-| **agy** | 370 rules, `command(git commit)` | **none** | `1.1.7` |
+| **agy** | 378 rules, `command(git commit)` | **none** | `1.1.7` |
 
 > **Last verified: 2026-07-28.** These CLIs ship fast — agy moved from `1.1.6` to `1.1.7` during a single afternoon of writing this. If the date above is old, treat the table as a starting point rather than fact.
 
@@ -161,7 +162,7 @@ These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](
 - **An allowlist is not a sandbox.** `Bash(python *)` allows `python -c 'anything'`, and `Bash(gcc *)` will happily compile and link whatever it is pointed at. This tool reduces prompt fatigue for trusted toolchains; it is not a containment boundary. If you need containment, use a devcontainer or your harness's sandbox mode.
 - **Bare `bash` and `sh` are deliberately not allowlisted.** `bash -c '<anything>'` would make every other rule here meaningless, so only `shellcheck`, `shfmt`, and the no-op `bash -n` are allowed; `bash -c` is in the ask list. If you allowlist `Bash(bash *)` yourself, understand that you have effectively turned the allowlist off.
 - **An `ask` rule shadows a more specific `allow` rule.** `Bash(npx *)` in ask would swallow `Bash(npx playwright *)` in allow. The rule lists are written to avoid overlaps entirely rather than depend on precedence; keep it that way when adding rules.
-- **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 370 rules are inert. Verify before relying on it.
+- **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 378 rules are inert. Verify before relying on it.
 - **A denied push rejects the whole command.** The guard scans every segment of a compound command, so `make test && git push origin main` is denied in its entirety — the build does not run first. This is deliberate (a guard should fail closed), but it surprises people who expect only the push to be blocked. Run the work and the push as separate commands.
 - **Bypass mode skips the rules.** If you run with `--dangerously-skip-permissions` anyway, allow/ask/deny are ignored wholesale — only the hook still fires.
 
