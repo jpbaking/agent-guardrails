@@ -1,0 +1,3 @@
+# Solo repo: main is the working branch, there is no PR flow to protect.
+# Everything else keeps the default protection.
+!main

@@ -132,13 +132,16 @@ These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](
 
 ### Overriding the guard
 
-It is a guard, not a wall — you own it. To push to a protected branch once:
+It is a guard, not a wall — you own it. For a repo where `main` genuinely *is* the working branch (a solo project, say), drop a `.guardrails-protected` file in the repo root:
 
-```bash
-CLAUDE_PROTECTED_BRANCHES="develop,release/*" git push origin main
+```
+# exempt this repo's main — solo project, no PR flow
+!main
 ```
 
-For a repo where `main` legitimately is the working branch (a solo project, say), put the list you actually want in `~/.claude/protected-branches.txt` — one glob per line, `#` for comments.
+A leading `!` exempts a pattern; anything else adds one. The same syntax works globally in `~/.claude/protected-branches.txt`. One glob per line, `#` for comments.
+
+**`CLAUDE_PROTECTED_BRANCHES` replaces the default list**, but it must be set in the environment of the agent process — exported before you launch the CLI, or via the `env` block in `settings.json`. An inline `CLAUDE_PROTECTED_BRANCHES=… git push` does **not** work: the hook is spawned as a separate process by the harness and never sees a prefix that applies only to the command it is inspecting. Use the per-repo file for one-off overrides.
 
 ## License
 

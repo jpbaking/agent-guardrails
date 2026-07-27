@@ -64,16 +64,38 @@ cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 { [ -n "$cwd" ] && [ -d "$cwd" ]; } || cwd=$PWD
 
 # ---------------------------------------------------------------- protected set
+# Sources, in order. A line beginning with "!" EXEMPTS a pattern, which is the
+# only way to subtract from the defaults — needed for solo repos where main
+# genuinely is the working branch.
+#
+#   1. $CLAUDE_PROTECTED_BRANCHES        replaces the defaults entirely
+#   2. ~/.claude/protected-branches.txt  adds (or exempts with !)
+#   3. <repo>/.guardrails-protected      adds (or exempts with !), per-repo
+#   4. origin/HEAD                       always added
+#
+# NOTE: the env var must be set in the environment of the *agent process*, not
+# inline on the command — the hook is spawned separately and never sees an
+# inline `VAR=x git push` prefix. Use the per-repo file for one-off overrides.
 PROTECTED=()
+EXEMPT=()
 IFS=',' read -r -a PROTECTED <<< "${CLAUDE_PROTECTED_BRANCHES:-$DEFAULT_PROTECTED}"
 
-cfg="${HOME}/.claude/protected-branches.txt"
-if [ -r "$cfg" ]; then
-  while IFS= read -r line; do
+read_cfg() {
+  [ -r "$1" ] || return 0
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
     line="${line%%#*}"; line="${line// /}"
-    [ -n "$line" ] && PROTECTED+=("$line")
-  done < "$cfg"
-fi
+    [ -n "$line" ] || continue
+    case "$line" in
+      !*) EXEMPT+=("${line#!}") ;;
+      *)  PROTECTED+=("$line") ;;
+    esac
+  done < "$1"
+}
+
+read_cfg "${HOME}/.claude/protected-branches.txt"
+repo_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
+[ -n "$repo_root" ] && read_cfg "$repo_root/.guardrails-protected"
 
 # The remote's own default branch, whatever it is called.
 origin_head=$(git -C "$cwd" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)
@@ -81,9 +103,15 @@ origin_head=$(git -C "$cwd" symbolic-ref --quiet --short refs/remotes/origin/HEA
 
 is_protected() {
   local b="$1" p
-  for p in "${PROTECTED[@]}"; do
+  # An explicit exemption wins over every protection rule.
+  for p in "${EXEMPT[@]}"; do
     [ -n "$p" ] || continue
     # shellcheck disable=SC2053  # unquoted $p is deliberate: glob match
+    [[ $b == $p ]] && return 1
+  done
+  for p in "${PROTECTED[@]}"; do
+    [ -n "$p" ] || continue
+    # shellcheck disable=SC2053
     [[ $b == $p ]] && return 0
   done
   return 1
