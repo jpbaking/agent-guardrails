@@ -127,7 +127,18 @@ These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](
 - **Bare `bash` and `sh` are deliberately not allowlisted.** `bash -c '<anything>'` would make every other rule here meaningless, so only `shellcheck`, `shfmt`, and the no-op `bash -n` are allowed; `bash -c` is in the ask list. If you allowlist `Bash(bash *)` yourself, understand that you have effectively turned the allowlist off.
 - **An `ask` rule shadows a more specific `allow` rule.** `Bash(npx *)` in ask would swallow `Bash(npx playwright *)` in allow. The rule lists are written to avoid overlaps entirely rather than depend on precedence; keep it that way when adding rules.
 - **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 198 rules are inert. Verify before relying on it.
+- **A denied push rejects the whole command.** The guard scans every segment of a compound command, so `make test && git push origin main` is denied in its entirety — the build does not run first. This is deliberate (a guard should fail closed), but it surprises people who expect only the push to be blocked. Run the work and the push as separate commands.
 - **Bypass mode skips the rules.** If you run with `--dangerously-skip-permissions` anyway, allow/ask/deny are ignored wholesale — only the hook still fires.
+
+### Overriding the guard
+
+It is a guard, not a wall — you own it. To push to a protected branch once:
+
+```bash
+CLAUDE_PROTECTED_BRANCHES="develop,release/*" git push origin main
+```
+
+For a repo where `main` legitimately is the working branch (a solo project, say), put the list you actually want in `~/.claude/protected-branches.txt` — one glob per line, `#` for comments.
 
 ## License
 
