@@ -171,6 +171,14 @@ Edit the `ALLOW` / `ASK` / `DENY` arrays. Keep them grouped by toolchain with th
 
 Claude syntax is the source of truth; `to_agy` translates. If you add a rule form `to_agy` doesn't handle (anything that isn't `Bash(…)` or `Read(…)`), extend the translator in the same PR — a silently-dropped rule is worse than a missing one.
 
+### Removing or replacing a rule — move it to `RETIRED`
+
+`--uninstall` subtracts the rules the *current* version knows about. So if you delete an entry from `ALLOW`/`ASK`/`DENY` — most often by replacing several narrow rules with one broad one — anyone who installed the older version keeps those rules **forever**: their config has them, and no future uninstall knows to look for them.
+
+This is not hypothetical. `Bash(go build *)`, `Bash(go test *)` and `Bash(go vet *)` shipped in v1, were superseded by `Bash(go *)`, and survived a full uninstall on a real machine.
+
+So: **when you remove or replace an entry, move its exact old text into the `RETIRED` array.** Both removers subtract `RETIRED` in addition to the live lists. Never delete anything from `RETIRED` — it only grows, and it is the only record that a rule was ever shipped.
+
 ### Classifying a new toolchain
 
 Ask where the damage lands, then pick the shape:

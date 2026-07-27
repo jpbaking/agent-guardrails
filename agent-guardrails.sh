@@ -521,6 +521,19 @@ DENY=(
   "Read(//home/**/.config/gcloud/**)" "Read(//**/.env.production)"
 )
 
+# ─────────────────────────────────────────────────────────────────── retired
+# Rules this project shipped once and no longer does — usually because a
+# narrow rule was replaced by a broader one. Uninstall subtracts these too.
+#
+# Without this list they become permanent orphans: an install from an older
+# version writes them, a later --uninstall does not know about them, and they
+# sit in the user's config forever. Whenever you REMOVE or REPLACE an entry in
+# ALLOW/ASK/DENY, move the old text here. Never delete from this list.
+RETIRED=(
+  # v1 shipped these three; superseded by "Bash(go *)" when Go was filled out.
+  "Bash(go build *)" "Bash(go test *)" "Bash(go vet *)"
+)
+
 # ───────────────────────────────────────────────────────────────────── plumbing
 
 arr() { printf '%s\n' "$@" | jq -R . | jq -s .; }
@@ -566,11 +579,12 @@ unwrite_claude() { # $1 = settings.json path
   jq \
     --argjson allow "$(arr "${ALLOW[@]}")" \
     --argjson ask   "$(arr "${ASK[@]}")" \
-    --argjson deny  "$(arr "${DENY[@]}")" '
+    --argjson deny  "$(arr "${DENY[@]}")" \
+    --argjson retired "$(arr "${RETIRED[@]}")" '
     if .permissions then
-      .permissions.allow = ((.permissions.allow // []) - $allow)
-      | .permissions.ask = ((.permissions.ask // []) - $ask)
-      | .permissions.deny = ((.permissions.deny // []) - $deny)
+      .permissions.allow = ((.permissions.allow // []) - $allow - $retired)
+      | .permissions.ask = ((.permissions.ask // []) - $ask - $retired)
+      | .permissions.deny = ((.permissions.deny // []) - $deny - $retired)
       | .permissions |= with_entries(select(.value != []))
       | if (.permissions | length) == 0 then del(.permissions) else . end
     else . end
@@ -610,11 +624,12 @@ unwrite_agy() { # $1 = settings.json path
   jq \
     --argjson allow "$(to_agy "${ALLOW[@]}" | jq -R . | jq -s .)" \
     --argjson ask   "$(to_agy "${ASK[@]}"   | jq -R . | jq -s .)" \
-    --argjson deny  "$(to_agy "${DENY[@]}"  | jq -R . | jq -s .)" '
+    --argjson deny  "$(to_agy "${DENY[@]}"  | jq -R . | jq -s .)" \
+    --argjson retired "$(to_agy "${RETIRED[@]}" | jq -R . | jq -s .)" '
     if .permissions then
-      .permissions.allow = ((.permissions.allow // []) - $allow)
-      | .permissions.ask = ((.permissions.ask // []) - $ask)
-      | .permissions.deny = ((.permissions.deny // []) - $deny)
+      .permissions.allow = ((.permissions.allow // []) - $allow - $retired)
+      | .permissions.ask = ((.permissions.ask // []) - $ask - $retired)
+      | .permissions.deny = ((.permissions.deny // []) - $deny - $retired)
       | .permissions |= with_entries(select(.value != []))
       | if (.permissions | length) == 0 then del(.permissions) else . end
     else . end

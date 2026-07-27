@@ -148,7 +148,7 @@ This **subtracts exactly the rules it added** and strips the guard hook — it d
 
 Two things it deliberately leaves behind: the guard script itself (it prints the path and the `rm` for you, in case a project-scope install still references it), and `[features] hooks = true` in Codex's `config.toml`, since your other hooks may need it. On agy it leaves `trustedWorkspaces` alone.
 
-One caveat: if a rule of your own is byte-identical to one of ours, uninstall removes it too — after the fact there is no way to tell them apart.
+Rules the project shipped in earlier versions and has since retired are subtracted too, so an uninstall is clean even if you installed an old version. One caveat remains: if a rule of your own is byte-identical to one of ours, uninstall removes it too — after the fact there is no way to tell them apart.
 
 **Claude Code won't pick the hook up mid-session** — open `/hooks` once to reload, or start a new session.
 
