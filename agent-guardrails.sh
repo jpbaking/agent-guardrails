@@ -91,7 +91,56 @@ ALLOW=(
   # ---- build / test misc ----
   "Bash(make *)" "Bash(cmake *)" "Bash(just *)" "Bash(task *)"
   "Bash(go test *)" "Bash(go build *)" "Bash(go vet *)" "Bash(gofmt *)"
+
+  # ---- rust ----
   "Bash(cargo build *)" "Bash(cargo test *)" "Bash(cargo clippy *)" "Bash(cargo fmt *)"
+  "Bash(cargo check *)" "Bash(cargo run *)" "Bash(cargo doc *)" "Bash(cargo tree *)"
+  "Bash(cargo add *)" "Bash(cargo remove *)" "Bash(cargo update *)" "Bash(cargo bench *)"
+  "Bash(cargo metadata *)" "Bash(cargo nextest *)" "Bash(cargo expand *)"
+  "Bash(cargo audit *)" "Bash(cargo deny *)" "Bash(cargo machete *)"
+  "Bash(rustc *)" "Bash(rustfmt *)" "Bash(rust-analyzer *)"
+  # rustup can install toolchains over the network; only the read-only
+  # subcommands are listed, the rest fall through to a prompt.
+  "Bash(rustup show *)" "Bash(rustup which *)" "Bash(rustup toolchain list *)"
+  "Bash(rustup component list *)" "Bash(rustup target list *)"
+
+  # ---- c / c++ ----
+  "Bash(gcc *)" "Bash(g++ *)" "Bash(cc *)" "Bash(c++ *)"
+  "Bash(clang *)" "Bash(clang++ *)" "Bash(ninja *)" "Bash(ctest *)"
+  "Bash(meson *)" "Bash(pkg-config *)" "Bash(./configure *)"
+  "Bash(autoconf *)" "Bash(automake *)" "Bash(autoreconf *)" "Bash(libtool *)"
+  "Bash(clang-format *)" "Bash(clang-tidy *)" "Bash(cppcheck *)" "Bash(iwyu *)"
+  "Bash(gdb *)" "Bash(lldb *)" "Bash(valgrind *)" "Bash(bear *)"
+  "Bash(objdump *)" "Bash(nm *)" "Bash(readelf *)" "Bash(ldd *)"
+  "Bash(ar *)" "Bash(ranlib *)" "Bash(strip *)" "Bash(size *)" "Bash(addr2line *)"
+
+  # ---- gh (read-only subcommands only) ----
+  # Anything that writes to GitHub — pr create, pr merge, issue create, gh api —
+  # is deliberately absent so it falls through to a prompt. Destructive ones are
+  # in DENY. `gh api` is omitted because -X POST/DELETE makes it a write tool.
+  "Bash(gh pr view *)" "Bash(gh pr list *)" "Bash(gh pr diff *)"
+  "Bash(gh pr checks *)" "Bash(gh pr status *)"
+  "Bash(gh issue view *)" "Bash(gh issue list *)" "Bash(gh issue status *)"
+  "Bash(gh repo view *)" "Bash(gh repo list *)" "Bash(gh repo clone *)"
+  "Bash(gh run view *)" "Bash(gh run list *)" "Bash(gh run watch *)"
+  "Bash(gh workflow list *)" "Bash(gh workflow view *)"
+  "Bash(gh release view *)" "Bash(gh release list *)"
+  "Bash(gh label list *)" "Bash(gh search *)" "Bash(gh browse *)"
+  "Bash(gh auth status *)" "Bash(gh status *)" "Bash(gh cache list *)"
+
+  # ---- shell scripting ----
+  # NOTE: bare `bash`/`sh` are NOT allowlisted on purpose — `bash -c '<anything>'`
+  # would make every other rule in this file meaningless. Only the linters and
+  # the no-op syntax check are listed. See README, "Honest limitations".
+  "Bash(shellcheck *)" "Bash(shfmt *)" "Bash(bashate *)"
+  "Bash(bash -n *)" "Bash(sh -n *)" "Bash(zsh -n *)"
+
+  # ---- playwright ----
+  # npx/bunx are NOT blanket-asked (see ASK below) so these specific forms can
+  # be allowed; every other npx invocation still falls through to a prompt.
+  "Bash(playwright *)" "Bash(npx playwright *)" "Bash(bunx playwright *)"
+  "Bash(pnpm playwright *)" "Bash(pnpm exec playwright *)" "Bash(yarn playwright *)"
+  "Bash(pytest --browser *)" "Bash(python -m playwright *)"
 
   # ---- read-only shell ----
   "Bash(ls *)" "Bash(pwd)" "Bash(cat *)" "Bash(head *)" "Bash(tail *)"
@@ -104,8 +153,19 @@ ALLOW=(
 # ─────────────────────────────────────────────────────────────────── ask rules
 # Allowed, but always confirmed: reaches off-machine, escalates, or destroys
 # work git cannot recover.
+#
+# An ask rule shadows a more specific allow rule when both match, so npx/bunx
+# are NOT blanket-listed here — that would swallow "npx playwright test". Any
+# npx invocation not explicitly allowed is unlisted, and unlisted already means
+# "prompt", so the safety outcome is identical with none of the shadowing.
 ASK=(
-  "Bash(npx *)" "Bash(bunx *)"          # execute arbitrary remote packages
+  "Bash(bash -c *)" "Bash(sh -c *)" "Bash(zsh -c *)"   # arbitrary execution
+  "Bash(eval *)"   # NB: no bare "source *" here — it would shadow the
+                   # venv-activation allow above and re-prompt every activate.
+  "Bash(gh pr create *)" "Bash(gh pr merge *)" "Bash(gh pr close *)"
+  "Bash(gh issue create *)" "Bash(gh api *)" "Bash(gh workflow run *)"
+  "Bash(gh repo create *)" "Bash(gh gist create *)"
+  "Bash(cargo install *)" "Bash(rustup install *)" "Bash(rustup update *)"
   "Bash(git reset --hard *)" "Bash(git clean *)"
   "Bash(git rebase *)" "Bash(git filter-branch *)"
   "Bash(docker *)" "Bash(podman *)" "Bash(kubectl *)" "Bash(helm *)"
@@ -123,7 +183,10 @@ DENY=(
   "Bash(gradle publish*)" "Bash(./gradlew publish*)"
   "Bash(twine upload *)" "Bash(poetry publish *)" "Bash(cargo publish *)"
   "Bash(git push --mirror *)" "Bash(git push --all *)"
-  "Bash(gh release create *)" "Bash(gh secret *)"
+  "Bash(gh release create *)" "Bash(gh secret *)" "Bash(gh variable set *)"
+  "Bash(gh repo delete *)" "Bash(gh auth token *)" "Bash(gh auth logout *)"
+  "Bash(gh ssh-key add *)" "Bash(gh gpg-key add *)"
+  "Bash(cargo login *)" "Bash(cargo owner *)" "Bash(cargo yank *)"
   "Bash(curl * | sh)" "Bash(curl * | bash)" "Bash(wget * | sh)"
   "Read(//home/**/.ssh/**)" "Read(//home/**/.aws/credentials)"
   "Read(//home/**/.config/gcloud/**)" "Read(//**/.env.production)"

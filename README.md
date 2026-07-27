@@ -4,7 +4,7 @@
 
 Coding agents are fast right up until they aren't. Every `npm test`, every `git diff`, every `pytest -k foo` stops and waits for you to click yes. So people reach for the bypass flag — and enterprise admins, reasonably, turn it off.
 
-`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~110 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that refuses to push to `main`.
+`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~200 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that refuses to push to `main`.
 
 One command, all three agent CLIs:
 
@@ -18,7 +18,7 @@ scope: global (user-level)
   claude  ~/.claude/settings.json  (+guard)
   codex   ~/.codex/hooks.json  (guard only, deny-only mode)
   agy     ~/.gemini/antigravity-cli/settings.json
-allow=111 ask=19 deny=28
+allow=203 ask=32 deny=37
 ```
 
 ---
@@ -31,11 +31,26 @@ An allowlist is a different conversation. It's specific, it's reviewable, and it
 
 ## What you get
 
-**Auto-approved (111 rules)** — git inspection and local mutation, `gradle`/`mvn`, `npm`/`yarn`/`pnpm`/`bun`, `tsc`/`eslint`/`prettier`/`jest`/`vitest`/`playwright`, `python`/`pytest`/`ruff`/`mypy`, `pip`/`venv`/`poetry`/`uv`, `make`/`cmake`/`go`/`cargo`, and read-only shell.
+**Auto-approved (203 rules)**
 
-**Still prompts (19 rules)** — `npx` and `bunx`, because they execute arbitrary remote packages and that's the one genuine supply-chain hole in a dev allowlist. Also `docker`/`kubectl`/`terraform`/cloud CLIs, `ssh`/`scp`/`rsync`, and the git commands that destroy work git can't recover (`reset --hard`, `clean`, `rebase`).
+| | |
+|---|---|
+| git | inspection and local mutation — `status`, `diff`, `log`, `add`, `commit`, `stash`, `fetch`, `merge` |
+| jvm | `gradle`/`./gradlew`, `mvn`/`./mvnw` |
+| node | `npm`, `yarn`, `pnpm`, `bun`, `tsc`, `eslint`, `prettier`, `jest`, `vitest` |
+| python | `python`, `pytest`, `ruff`, `black`, `mypy`, `pip`, `venv`, `poetry`, `uv` |
+| rust | `cargo` build/test/check/run/clippy/fmt/doc/add/bench/nextest/audit, `rustc`, `rustfmt`, read-only `rustup` |
+| c/c++ | `gcc`, `g++`, `clang`, `ninja`, `ctest`, `meson`, `./configure`, `clang-format`, `clang-tidy`, `cppcheck`, `gdb`, `lldb`, `valgrind`, binutils |
+| gh | read-only only — `pr view`/`list`/`diff`/`checks`, `issue view`/`list`, `run view`/`watch`, `repo view`, `search` |
+| playwright | `playwright`, `npx playwright`, `pnpm exec playwright`, `python -m playwright` |
+| shell | `shellcheck`, `shfmt`, and the no-op syntax check `bash -n` |
+| misc | `make`, `cmake`, `just`, `go`, and read-only shell (`ls`, `cat`, `grep`, `rg`, `jq`, …) |
 
-**Blocked outright (28 rules)** — `sudo`, `rm -rf /`, every publish command (`npm publish`, `mvn deploy`, `twine upload`, `cargo publish`), `gh release create`, `gh secret`, and reads of `~/.ssh`, `~/.aws/credentials`, `.env.production`.
+**Still prompts (32 rules)** — `bash -c` / `sh -c` / `eval`, because they are arbitrary execution. Everything in `gh` that writes to GitHub (`pr create`, `pr merge`, `issue create`, `gh api`, `workflow run`). `cargo install` and `rustup install`/`update`, which fetch and run code. `docker`/`kubectl`/`terraform`/cloud CLIs, `ssh`/`scp`/`rsync`, and the git commands that destroy work git can't recover (`reset --hard`, `clean`, `rebase`).
+
+Anything not in any list also prompts — that's the default. `npx` is the notable one: only `npx playwright` is allowlisted, so every other `npx` invocation prompts without needing an explicit rule.
+
+**Blocked outright (37 rules)** — `sudo`, `rm -rf /`, every publish path (`npm publish`, `mvn deploy`, `twine upload`, `cargo publish`/`login`/`owner`/`yank`, `gh release create`), credential mutation (`gh secret`, `gh auth token`, `gh ssh-key add`), `gh repo delete`, and reads of `~/.ssh`, `~/.aws/credentials`, `.env.production`.
 
 **A push guard** that reads the branch you're actually on:
 
@@ -83,9 +98,9 @@ This is the part other tools gloss over. Each CLI's capabilities were determined
 
 | | allowlist | push guard | verified against |
 |---|---|---|---|
-| **Claude Code** | 111 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
+| **Claude Code** | 203 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
 | **Codex** | **none** — no allowlist mechanism exists | **deny only** | `0.145.0` |
-| **agy** | 107 rules, `command(git commit)` | **none** | `1.1.7` |
+| **agy** | 198 rules, `command(git commit)` | **none** | `1.1.7` |
 
 > **Last verified: 2026-07-28.** These CLIs ship fast — agy moved from `1.1.6` to `1.1.7` during a single afternoon of writing this. If the date above is old, treat the table as a starting point rather than fact.
 
@@ -108,8 +123,10 @@ These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](
 ## Honest limitations
 
 - **`deny` rules on pipes are decorative.** `Bash(curl * | sh)` cannot reliably catch pipe-to-shell — prefix matching isn't a parser, and a rewritten command sidesteps it. Those entries document intent; they are not enforcement.
-- **An allowlist is not a sandbox.** `Bash(python *)` allows `python -c 'anything'`. This tool reduces prompt fatigue for trusted toolchains; it is not a containment boundary. If you need containment, use a devcontainer or your harness's sandbox mode.
-- **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 107 rules are inert. Verify before relying on it.
+- **An allowlist is not a sandbox.** `Bash(python *)` allows `python -c 'anything'`, and `Bash(gcc *)` will happily compile and link whatever it is pointed at. This tool reduces prompt fatigue for trusted toolchains; it is not a containment boundary. If you need containment, use a devcontainer or your harness's sandbox mode.
+- **Bare `bash` and `sh` are deliberately not allowlisted.** `bash -c '<anything>'` would make every other rule here meaningless, so only `shellcheck`, `shfmt`, and the no-op `bash -n` are allowed; `bash -c` is in the ask list. If you allowlist `Bash(bash *)` yourself, understand that you have effectively turned the allowlist off.
+- **An `ask` rule shadows a more specific `allow` rule.** `Bash(npx *)` in ask would swallow `Bash(npx playwright *)` in allow. The rule lists are written to avoid overlaps entirely rather than depend on precedence; keep it that way when adding rules.
+- **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 198 rules are inert. Verify before relying on it.
 - **Bypass mode skips the rules.** If you run with `--dangerously-skip-permissions` anyway, allow/ask/deny are ignored wholesale — only the hook still fires.
 
 ## License
