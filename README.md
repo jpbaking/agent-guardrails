@@ -130,6 +130,7 @@ The guard is copied to `~/.agents/hooks/` so the absolute path written into your
 ./agent-guardrails.sh --project ~/work/api
 ./agent-guardrails.sh --print           # show the JSON, touch nothing
 ./agent-guardrails.sh --global --no-hook  # rules only, skip the guard
+./agent-guardrails.sh --global --uninstall  # remove everything it added
 ```
 
 Every write is additive, de-duplicated, idempotent, and backed up to `<file>.bak` first. Your existing rules, hooks, model, and theme survive. Run it twice and nothing changes.
