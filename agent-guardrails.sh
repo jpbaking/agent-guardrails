@@ -529,9 +529,23 @@ DENY=(
 # version writes them, a later --uninstall does not know about them, and they
 # sit in the user's config forever. Whenever you REMOVE or REPLACE an entry in
 # ALLOW/ASK/DENY, move the old text here. Never delete from this list.
+# It is also subtracted on INSTALL, before the current rules are merged in.
+# That matters for RECLASSIFIED rules: "Bash(docker *)" used to be in ASK and
+# is now in ALLOW. Without the purge, an older install leaves it in ask, the
+# new install adds it to allow, and it ends up in BOTH — where ask wins and the
+# allow rule silently does nothing. Purge-then-merge lands it in allow alone.
 RETIRED=(
-  # v1 shipped these three; superseded by "Bash(go *)" when Go was filled out.
+  # No longer shipped in any list.
+  # v1 had these three; superseded by "Bash(go *)" when Go was filled out.
   "Bash(go build *)" "Bash(go test *)" "Bash(go vet *)"
+  # Replaced by explicit carve-outs ("Bash(npx playwright *)" etc.) so that a
+  # broad ask would stop shadowing them.
+  "Bash(npx *)" "Bash(bunx *)"
+
+  # Reclassified ASK -> ALLOW when the container/k8s/IaC toolchains were built
+  # out with narrow asks on the destructive verbs instead.
+  "Bash(docker *)" "Bash(podman *)" "Bash(kubectl *)" "Bash(helm *)"
+  "Bash(terraform *)"
 )
 
 # ───────────────────────────────────────────────────────────────────── plumbing
@@ -648,11 +662,12 @@ write_claude() { # $1 = settings.json path
     --argjson allow "$(arr "${ALLOW[@]}")" \
     --argjson ask   "$(arr "${ASK[@]}")" \
     --argjson deny  "$(arr "${DENY[@]}")" \
+    --argjson retired "$(arr "${RETIRED[@]}")" \
     --arg cmd "bash '$GUARD'" --argjson hook "$DO_HOOK" '
     .permissions //= {}
-    | .permissions.allow = ((.permissions.allow // []) + $allow | unique)
-    | .permissions.ask   = ((.permissions.ask   // []) + $ask   | unique)
-    | .permissions.deny  = ((.permissions.deny  // []) + $deny  | unique)
+    | .permissions.allow = (((.permissions.allow // []) - $retired) + $allow | unique)
+    | .permissions.ask   = (((.permissions.ask   // []) - $retired) + $ask   | unique)
+    | .permissions.deny  = (((.permissions.deny  // []) - $retired) + $deny  | unique)
     | if $hook == 1 then
         .hooks //= {} | .hooks.PreToolUse //= []
         | .hooks.PreToolUse |= (
@@ -701,11 +716,12 @@ write_agy() { # $1 = settings.json path, $2 = optional workspace to trust
     --argjson allow "$(to_agy "${ALLOW[@]}" | jq -R . | jq -s .)" \
     --argjson ask   "$(to_agy "${ASK[@]}"   | jq -R . | jq -s .)" \
     --argjson deny  "$(to_agy "${DENY[@]}"  | jq -R . | jq -s .)" \
+    --argjson retired "$(to_agy "${RETIRED[@]}" | jq -R . | jq -s .)" \
     --arg ws "$ws" '
     .permissions //= {}
-    | .permissions.allow = ((.permissions.allow // []) + $allow | unique)
-    | .permissions.ask   = ((.permissions.ask   // []) + $ask   | unique)
-    | .permissions.deny  = ((.permissions.deny  // []) + $deny  | unique)
+    | .permissions.allow = (((.permissions.allow // []) - $retired) + $allow | unique)
+    | .permissions.ask   = (((.permissions.ask   // []) - $retired) + $ask   | unique)
+    | .permissions.deny  = (((.permissions.deny  // []) - $retired) + $deny  | unique)
     | if $ws != "" then .trustedWorkspaces = ((.trustedWorkspaces // []) + [$ws] | unique)
       else . end
   ' "$f.bak" > "$f"
