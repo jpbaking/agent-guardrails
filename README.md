@@ -134,6 +134,19 @@ The guard is copied to `~/.agents/hooks/` so the absolute path written into your
 
 Every write is additive, de-duplicated, idempotent, and backed up to `<file>.bak` first. Your existing rules, hooks, model, and theme survive. Run it twice and nothing changes.
 
+### Uninstalling
+
+```bash
+./agent-guardrails.sh --global --uninstall
+./agent-guardrails.sh --project --uninstall
+```
+
+This **subtracts exactly the rules it added** and strips the guard hook — it does not restore `<file>.bak`. That matters: `.bak` is single-level and overwritten on every run, so after two installs it holds your previous *installed* state, not your original config. Subtraction gets you back to a genuinely clean file however many times you have run it, and it is idempotent and safe on a config that never had it installed.
+
+Two things it deliberately leaves behind: the guard script itself (it prints the path and the `rm` for you, in case a project-scope install still references it), and `[features] hooks = true` in Codex's `config.toml`, since your other hooks may need it. On agy it leaves `trustedWorkspaces` alone.
+
+One caveat: if a rule of your own is byte-identical to one of ours, uninstall removes it too — after the fact there is no way to tell them apart.
+
 **Claude Code won't pick the hook up mid-session** — open `/hooks` once to reload, or start a new session.
 
 ## The three harnesses are not equal

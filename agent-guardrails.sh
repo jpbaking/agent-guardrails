@@ -7,6 +7,8 @@
 #   ./agent-guardrails.sh --print             # show what would be written, touch nothing
 #   ./agent-guardrails.sh --global --no-hook  # allowlist only, skip the push guard
 #   ./agent-guardrails.sh --print --managed   # shape as an enterprise policy proposal
+#   ./agent-guardrails.sh --global --uninstall    # remove every rule and hook it added
+#   ./agent-guardrails.sh --project --uninstall   # same, for a project
 #
 # You pick the scope; the script handles the per-harness differences:
 #
@@ -520,6 +522,80 @@ ensure_json() {
   jq -e . "$1" >/dev/null || { echo "$1 is not valid JSON — fix it first" >&2; exit 1; }
 }
 
+# ── removers ──────────────────────────────────────────────────────────────────
+# Uninstall works by SUBTRACTING exactly the rules this script knows it adds,
+# not by restoring <file>.bak. The .bak is single-level and is overwritten on
+# every run, so after two installs it no longer holds your original state.
+# Subtraction is idempotent and leaves rules you added yourself untouched.
+#
+# Caveat: if one of your own rules is byte-identical to one of ours, it goes
+# too. There is no way to tell them apart after the fact.
+
+unwrite_claude() { # $1 = settings.json path
+  local f=$1
+  [ -f "$f" ] || { note "claude  skipped ($f not found)"; return; }
+  jq -e . "$f" >/dev/null || { echo "$f is not valid JSON" >&2; exit 1; }
+  backup "$f"
+  jq \
+    --argjson allow "$(arr "${ALLOW[@]}")" \
+    --argjson ask   "$(arr "${ASK[@]}")" \
+    --argjson deny  "$(arr "${DENY[@]}")" '
+    if .permissions then
+      .permissions.allow = ((.permissions.allow // []) - $allow)
+      | .permissions.ask = ((.permissions.ask // []) - $ask)
+      | .permissions.deny = ((.permissions.deny // []) - $deny)
+      | .permissions |= with_entries(select(.value != []))
+      | if (.permissions | length) == 0 then del(.permissions) else . end
+    else . end
+    | if .hooks.PreToolUse then
+        .hooks.PreToolUse |= (
+          map(.hooks //= [] | .hooks |= map(select(.command | test("git-push-guard\\.sh") | not)))
+          | map(select(.hooks | length > 0)))
+        | if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end
+        | if (.hooks | length) == 0 then del(.hooks) else . end
+      else . end
+  ' "$f.bak" > "$f"
+  note "claude  cleaned $f"
+}
+
+unwrite_codex() { # $1 = .codex dir
+  local f="$1/hooks.json"
+  [ -f "$f" ] || { note "codex   skipped ($f not found)"; return; }
+  jq -e . "$f" >/dev/null || { echo "$f is not valid JSON" >&2; exit 1; }
+  backup "$f"
+  jq '
+    if .hooks.PreToolUse then
+      .hooks.PreToolUse |= (
+        map(.hooks //= [] | .hooks |= map(select(.command | test("git-push-guard\\.sh") | not)))
+        | map(select(.hooks | length > 0)))
+      | if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end
+    else . end
+  ' "$f.bak" > "$f"
+  note "codex   cleaned $f"
+  note "        [features] hooks = true left in config.toml — other hooks may need it"
+}
+
+unwrite_agy() { # $1 = settings.json path
+  local f=$1
+  [ -f "$f" ] || { note "agy     skipped ($f not found)"; return; }
+  jq -e . "$f" >/dev/null || { echo "$f is not valid JSON" >&2; exit 1; }
+  backup "$f"
+  jq \
+    --argjson allow "$(to_agy "${ALLOW[@]}" | jq -R . | jq -s .)" \
+    --argjson ask   "$(to_agy "${ASK[@]}"   | jq -R . | jq -s .)" \
+    --argjson deny  "$(to_agy "${DENY[@]}"  | jq -R . | jq -s .)" '
+    if .permissions then
+      .permissions.allow = ((.permissions.allow // []) - $allow)
+      | .permissions.ask = ((.permissions.ask // []) - $ask)
+      | .permissions.deny = ((.permissions.deny // []) - $deny)
+      | .permissions |= with_entries(select(.value != []))
+      | if (.permissions | length) == 0 then del(.permissions) else . end
+    else . end
+  ' "$f.bak" > "$f"
+  note "agy     cleaned $f"
+  note "        trustedWorkspaces left alone — remove paths yourself if you want"
+}
+
 # ── writers ───────────────────────────────────────────────────────────────────
 
 write_claude() { # $1 = settings.json path
@@ -600,7 +676,7 @@ write_agy() { # $1 = settings.json path, $2 = optional workspace to trust
 
 usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
-SCOPE=""; PROJ=""; DO_HOOK=1; MANAGED=0
+SCOPE=""; PROJ=""; DO_HOOK=1; MANAGED=0; UNINSTALL=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --global|--user)      SCOPE="global" ;;
@@ -609,6 +685,7 @@ while [ $# -gt 0 ]; do
     --print)              SCOPE="print" ;;
     --managed)            MANAGED=1 ;;
     --no-hook)            DO_HOOK=0 ;;
+    --uninstall)          UNINSTALL=1 ;;
     -h|--help)            usage 0 ;;
     *) echo "unknown option: $1" >&2; usage 1 ;;
   esac
@@ -629,6 +706,25 @@ if [ "$SCOPE" = "print" ]; then
               + (if $managed == 1 then {allowManagedPermissionRulesOnly: true} else {} end)),
      agy: {permissions: {allow: $agy_allow, ask: $agy_ask, deny: $agy_deny}},
      codex: "no allowlist — approval_policy x sandbox_mode x trust_level; enterprise: /etc/codex/managed_config.toml"}'
+  exit 0
+fi
+
+if [ "$UNINSTALL" -eq 1 ]; then
+  if [ "$SCOPE" = "global" ]; then
+    echo "uninstall: global (user-level)"
+    unwrite_claude "${HOME}/.claude/settings.json"
+    unwrite_codex  "${HOME}/.codex"
+    unwrite_agy    "${HOME}/.gemini/antigravity-cli/settings.json"
+  else
+    PROJ=$(cd "${PROJ:-$PWD}" && pwd)
+    echo "uninstall: project ($PROJ)"
+    unwrite_claude "$PROJ/.claude/settings.json"
+    unwrite_codex  "$PROJ/.codex"
+    unwrite_agy    "${HOME}/.gemini/antigravity-cli/settings.json"
+  fi
+  echo "guard script left at $GUARD"
+  echo "  remove it yourself if nothing else uses it:  rm '$GUARD'"
+  echo "backups written alongside each file as <file>.bak"
   exit 0
 fi
 
