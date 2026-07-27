@@ -151,6 +151,24 @@ ALLOW=(
   "Bash(virtualenv *)" "Bash(source *bin/activate)"
   "Bash(.venv/bin/*)" "Bash(venv/bin/*)" "Bash(./.venv/bin/*)"
 
+  # ---- databases: local engines, linters, and read-only verbs ----
+  # The networked clients (psql, mysql, mongosh, redis-cli, ...) are NOT here.
+  # With terraform or kubectl the dangerous verb is the first token, so a
+  # narrow ask can catch it. With a database client the destructive part lives
+  # inside the query string — `psql -c 'DROP TABLE users'` is indistinguishable
+  # from a SELECT to prefix matching. Those clients stay unlisted and prompt.
+  # sqlite3 and duckdb are allowed because their blast radius is a local file.
+  "Bash(sqlite3 *)" "Bash(duckdb *)" "Bash(litecli *)"
+  "Bash(sqlfluff *)" "Bash(sqlfmt *)" "Bash(sqlint *)" "Bash(pg_isready *)"
+  "Bash(flyway info *)" "Bash(flyway validate *)"
+  "Bash(liquibase status *)" "Bash(liquibase validate *)" "Bash(liquibase diff *)"
+  "Bash(alembic current *)" "Bash(alembic history *)" "Bash(alembic heads *)"
+  "Bash(alembic show *)" "Bash(alembic check *)"
+  "Bash(prisma validate *)" "Bash(prisma format *)" "Bash(prisma generate *)"
+  "Bash(atlas schema inspect *)" "Bash(migrate version *)" "Bash(goose status *)"
+  "Bash(dbt compile *)" "Bash(dbt parse *)" "Bash(dbt ls *)" "Bash(dbt debug *)"
+  "Bash(dbt deps *)" "Bash(dbt docs generate *)"
+
   # ---- build / test misc ----
   "Bash(make *)" "Bash(cmake *)" "Bash(just *)" "Bash(task *)"
 
@@ -285,6 +303,32 @@ ASK=(
   "Bash(npm exec *)" "Bash(pnpm dlx *)" "Bash(yarn dlx *)" "Bash(bun x *)"
   # Reaches Expo's build servers (and can cost money).
   "Bash(eas build *)" "Bash(expo login *)"
+
+  # ---- database clients and migrations ----
+  # Listed explicitly rather than left unlisted so the intent is documented:
+  # these connect to a server that may be production, and the allowlist cannot
+  # inspect the SQL they carry.
+  "Bash(psql *)" "Bash(pgcli *)" "Bash(mysql *)" "Bash(mycli *)"
+  "Bash(mysqladmin *)" "Bash(sqlcmd *)" "Bash(sqlplus *)" "Bash(bcp *)"
+  "Bash(clickhouse-client *)" "Bash(cockroach sql *)" "Bash(usql *)"
+  "Bash(mongosh *)" "Bash(mongo *)" "Bash(redis-cli *)" "Bash(valkey-cli *)"
+  "Bash(cqlsh *)" "Bash(influx *)" "Bash(etcdctl *)" "Bash(cypher-shell *)"
+  "Bash(elasticdump *)" "Bash(createdb *)"
+  # Bulk data in or out.
+  "Bash(pg_dump *)" "Bash(pg_restore *)" "Bash(mysqldump *)"
+  "Bash(mongodump *)" "Bash(mongorestore *)" "Bash(mongoimport *)"
+  "Bash(mongoexport *)"
+  # Migrations that write to a schema.
+  "Bash(flyway migrate *)" "Bash(flyway undo *)" "Bash(flyway repair *)"
+  "Bash(liquibase update *)" "Bash(liquibase rollback *)"
+  "Bash(alembic upgrade *)" "Bash(alembic downgrade *)" "Bash(alembic stamp *)"
+  "Bash(prisma migrate *)" "Bash(prisma db push *)" "Bash(prisma db pull *)"
+  "Bash(dbt run *)" "Bash(dbt build *)" "Bash(dbt seed *)" "Bash(dbt snapshot *)"
+  "Bash(knex migrate *)" "Bash(sequelize db:migrate *)"
+  "Bash(typeorm migration:run *)" "Bash(typeorm migration:revert *)"
+  "Bash(atlas schema apply *)" "Bash(migrate up *)" "Bash(migrate down *)"
+  "Bash(goose up *)" "Bash(goose down *)" "Bash(dbmate up *)"
+  "Bash(sqitch deploy *)" "Bash(sqitch revert *)"
   "Bash(git reset --hard *)" "Bash(git clean *)"
   "Bash(git rebase *)" "Bash(git filter-branch *)"
   "Bash(aws *)" "Bash(gcloud *)" "Bash(az *)"
@@ -362,6 +406,15 @@ DENY=(
   "Bash(gem push *)" "Bash(gem signin *)" "Bash(gem owner *)" "Bash(gem yank *)"
   "Bash(dotnet nuget push *)" "Bash(nuget push *)" "Bash(nuget setapikey *)"
   "Bash(expo publish *)" "Bash(eas submit *)" "Bash(npm adduser *)"
+  # Wipes a schema or database outright. `flyway clean` drops every object in
+  # the schema and is the classic way to lose a production database.
+  # NOTE: redis-cli command names are case-insensitive but these rules are not,
+  # so both spellings are listed. This is a best-effort catch, not a boundary —
+  # see "Honest limitations" in the README.
+  "Bash(dropdb *)" "Bash(flyway clean *)" "Bash(liquibase dropAll *)"
+  "Bash(prisma migrate reset *)" "Bash(prisma db execute *)"
+  "Bash(redis-cli flushall *)" "Bash(redis-cli FLUSHALL *)"
+  "Bash(redis-cli flushdb *)" "Bash(redis-cli FLUSHDB *)"
   "Bash(curl * | sh)" "Bash(curl * | bash)" "Bash(wget * | sh)"
   "Read(//home/**/.ssh/**)" "Read(//home/**/.aws/credentials)"
   "Read(//home/**/.config/gcloud/**)" "Read(//**/.env.production)"
