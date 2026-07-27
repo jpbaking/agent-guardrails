@@ -63,9 +63,38 @@ ALLOW=(
   # NOTE: `git push` is deliberately absent — the guard decides it per-branch.
   # Allowlisting it here would defeat the protected-branch check.
 
-  # ---- gradle / maven ----
-  "Bash(./gradlew *)" "Bash(gradle *)" "Bash(gradlew *)"
-  "Bash(mvn *)" "Bash(./mvnw *)" "Bash(mvnw *)"
+  # ---- jvm: build tools ----
+  "Bash(./gradlew *)" "Bash(gradle *)" "Bash(gradlew *)" "Bash(gradle-profiler *)"
+  "Bash(mvn *)" "Bash(./mvnw *)" "Bash(mvnw *)" "Bash(mvnd *)"
+
+  # ---- java ----
+  # `java -jar x.jar` is arbitrary execution, same as `python x.py` — allowed on
+  # the same reasoning. keytool is NOT here: it manages keystores and private
+  # keys, so it sits with the credential tools in ASK.
+  "Bash(java *)" "Bash(javac *)" "Bash(jar *)" "Bash(javap *)" "Bash(jshell *)"
+  "Bash(jdeps *)" "Bash(jlink *)" "Bash(jpackage *)" "Bash(javadoc *)"
+  "Bash(jcmd *)" "Bash(jstack *)" "Bash(jmap *)" "Bash(jps *)" "Bash(jstat *)"
+  "Bash(jfr *)" "Bash(jhsdb *)" "Bash(sdk list *)" "Bash(sdk current *)"
+
+  # ---- spring ----
+  "Bash(spring *)" "Bash(./gradlew bootRun *)" "Bash(./gradlew bootJar *)"
+
+  # ---- kotlin ----
+  "Bash(kotlin *)" "Bash(kotlinc *)" "Bash(kotlinc-jvm *)" "Bash(ktlint *)"
+  "Bash(detekt *)" "Bash(kapt *)"
+
+  # ---- dotnet ----
+  # `dotnet publish` builds a deployable folder locally — it does NOT publish to
+  # a registry. That is `dotnet nuget push`, which is denied.
+  "Bash(dotnet *)" "Bash(msbuild *)" "Bash(nuget list *)" "Bash(nuget locals *)"
+  "Bash(csharpier *)" "Bash(dotnet-format *)"
+
+  # ---- ruby ----
+  "Bash(ruby *)" "Bash(gem *)" "Bash(bundle *)" "Bash(bundler *)"
+  "Bash(rake *)" "Bash(rspec *)" "Bash(rubocop *)" "Bash(rails *)"
+  "Bash(irb *)" "Bash(erb *)" "Bash(pry *)" "Bash(foreman *)"
+  "Bash(puma *)" "Bash(sidekiq *)" "Bash(rackup *)" "Bash(standardrb *)"
+  "Bash(rbenv version *)" "Bash(rbenv versions *)" "Bash(rbenv local *)"
 
   # ---- node / js ----
   "Bash(node *)" "Bash(npm *)" "Bash(yarn *)" "Bash(pnpm *)" "Bash(bun *)"
@@ -210,7 +239,12 @@ ASK=(
   "Bash(gh issue create *)" "Bash(gh api *)" "Bash(gh workflow run *)"
   "Bash(gh repo create *)" "Bash(gh gist create *)"
   "Bash(cargo install *)" "Bash(rustup install *)" "Bash(rustup update *)"
-  "Bash(go install *)"
+  "Bash(go install *)" "Bash(dotnet tool install *)" "Bash(sdk install *)"
+  "Bash(keytool *)"   # manages keystores and private keys
+  # Drops a database. Overrides the broad rails/rake allows above.
+  "Bash(rails db:drop *)" "Bash(rails db:reset *)" "Bash(rails destroy *)"
+  "Bash(rake db:drop *)" "Bash(rake db:reset *)"
+  "Bash(dotnet nuget add source *)"   # adds a package feed — supply chain
   "Bash(git reset --hard *)" "Bash(git clean *)"
   "Bash(git rebase *)" "Bash(git filter-branch *)"
   "Bash(aws *)" "Bash(gcloud *)" "Bash(az *)"
@@ -284,6 +318,9 @@ DENY=(
   "Bash(pvecm delnode *)" "Bash(pvecm add *)" "Bash(pveum user delete *)"
   "Bash(pveum role delete *)" "Bash(pveum acl delete *)"
   "Bash(virsh pool-delete *)" "Bash(VBoxManage unregistervm --delete *)"
+  # Package registries and their credentials — same class as npm publish.
+  "Bash(gem push *)" "Bash(gem signin *)" "Bash(gem owner *)" "Bash(gem yank *)"
+  "Bash(dotnet nuget push *)" "Bash(nuget push *)" "Bash(nuget setapikey *)"
   "Bash(curl * | sh)" "Bash(curl * | bash)" "Bash(wget * | sh)"
   "Read(//home/**/.ssh/**)" "Read(//home/**/.aws/credentials)"
   "Read(//home/**/.config/gcloud/**)" "Read(//**/.env.production)"

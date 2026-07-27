@@ -4,7 +4,7 @@
 
 Coding agents are fast right up until they aren't. Every `npm test`, every `git diff`, every `pytest -k foo` stops and waits for you to click yes. So people reach for the bypass flag — and enterprise admins, reasonably, turn it off.
 
-`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~280 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that refuses to push to `main`.
+`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~330 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that refuses to push to `main`.
 
 One command, all three agent CLIs:
 
@@ -18,7 +18,7 @@ scope: global (user-level)
   claude  ~/.claude/settings.json  (+guard)
   codex   ~/.codex/hooks.json  (guard only, deny-only mode)
   agy     ~/.gemini/antigravity-cli/settings.json
-allow=279 ask=111 deny=52
+allow=333 ask=120 deny=59
 ```
 
 ---
@@ -31,12 +31,15 @@ An allowlist is a different conversation. It's specific, it's reviewable, and it
 
 ## What you get
 
-**Auto-approved (279 rules)**
+**Auto-approved (333 rules)**
 
 | | |
 |---|---|
 | git | inspection and local mutation — `status`, `diff`, `log`, `add`, `commit`, `stash`, `fetch`, `merge` |
-| jvm | `gradle`/`./gradlew`, `mvn`/`./mvnw` |
+| jvm | `gradle`/`./gradlew`, `mvn`/`./mvnw`/`mvnd`, `java`, `javac`, `jar`, `jshell`, `jcmd`/`jstack`/`jmap`, `spring` |
+| kotlin | `kotlin`, `kotlinc`, `ktlint`, `detekt` |
+| dotnet | `dotnet` (build/test/run/restore/format/publish), `msbuild`, `csharpier` |
+| ruby | `ruby`, `gem`, `bundle`, `rake`, `rspec`, `rubocop`, `rails`, `irb`, `puma`, `sidekiq` |
 | node | `npm`, `yarn`, `pnpm`, `bun`, `tsc`, `eslint`, `prettier`, `jest`, `vitest` |
 | python | `python`, `pytest`, `ruff`, `black`, `mypy`, `pip`, `venv`, `poetry`, `uv` |
 | rust | `cargo` build/test/check/run/clippy/fmt/doc/add/bench/nextest/audit, `rustc`, `rustfmt`, read-only `rustup` |
@@ -54,7 +57,7 @@ An allowlist is a different conversation. It's specific, it's reviewable, and it
 
 The infrastructure toolchains are allowed **broadly**, then the verbs that change reality are pulled back — a narrower `ask` rule always wins over a broader `allow`. So `terraform plan`, `kubectl get`, `helm diff`, and `docker build` run free, while these stop and ask:
 
-**Still prompts (111 rules)**
+**Still prompts (120 rules)**
 
 | | |
 |---|---|
@@ -66,13 +69,15 @@ The infrastructure toolchains are allowed **broadly**, then the verbs that chang
 | writes into a guest disk | `qemu-nbd`, `qemu-img resize`/`snapshot`/`commit`/`rebase`, `guestfish`, `guestmount`, `virt-sysprep`, `virt-resize` |
 | arbitrary execution | `bash -c`, `sh -c`, `eval` |
 | writes to GitHub | `gh pr create`/`merge`, `gh issue create`, `gh api`, `gh workflow run` |
-| fetches and runs code | `cargo install`, `go install`, `rustup install`/`update` |
+| fetches and runs code | `cargo install`, `go install`, `rustup install`/`update`, `dotnet tool install`, `sdk install`, `dotnet nuget add source` |
+| drops a database | `rails db:drop`/`db:reset`/`destroy`, `rake db:drop`/`db:reset` |
+| manages private keys | `keytool` |
 | reaches other machines | `aws`, `gcloud`, `az`, `ssh`, `scp`, `rsync` |
 | destroys uncommitted work | `git reset --hard`, `git clean`, `git rebase` |
 
 Anything not in any list also prompts — that's the default, and it does real work here. `npx` is the clearest case: only `npx playwright` is allowlisted, so every other `npx` invocation prompts without needing a rule. Same for `ansible-playbook` and bare `bash`.
 
-**Blocked outright (52 rules)** — `sudo`, `rm -rf /`, every publish path (`npm publish`, `mvn deploy`, `twine upload`, `cargo publish`, `gh release create`, and `docker push`/`login`, `podman push`, `helm push`), credential mutation (`gh secret`, `gh auth token`, `gh ssh-key add`, `cargo login`), `gh repo delete`, cluster-membership and auth changes on a hypervisor (`pvecm delnode`/`add`, `pveum user`/`role`/`acl delete`, `virsh pool-delete`, `VBoxManage unregistervm --delete`), and reads of `~/.ssh`, `~/.aws/credentials`, `.env.production`.
+**Blocked outright (59 rules)** — `sudo`, `rm -rf /`, every publish path (`npm publish`, `mvn deploy`, `gradle publish`, `twine upload`, `cargo publish`, `gem push`/`yank`/`owner`, `dotnet nuget push`, `gh release create`, and `docker push`/`login`, `podman push`, `helm push`), credential mutation (`gem signin`, `nuget setapikey`, `gh secret`, `gh auth token`, `gh ssh-key add`, `cargo login`), `gh repo delete`, cluster-membership and auth changes on a hypervisor (`pvecm delnode`/`add`, `pveum user`/`role`/`acl delete`, `virsh pool-delete`, `VBoxManage unregistervm --delete`), and reads of `~/.ssh`, `~/.aws/credentials`, `.env.production`.
 
 > **On the infrastructure and hypervisor tools:** allowing `terraform`, `kubectl`, `ansible`, `qm` or `virsh` at all is a bigger step than allowing `pytest`, because the blast radius is production rather than your laptop. The split above is the defensible default, not the only one. If your agents never touch infrastructure, delete those blocks. If you want `terraform apply` to run unattended in a sandboxed CI identity, move it from `ASK` to `ALLOW` — but do that deliberately, and not on a workstation holding production credentials.
 >
@@ -124,9 +129,9 @@ This is the part other tools gloss over. Each CLI's capabilities were determined
 
 | | allowlist | push guard | verified against |
 |---|---|---|---|
-| **Claude Code** | 279 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
+| **Claude Code** | 333 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
 | **Codex** | **none** — no allowlist mechanism exists | **deny only** | `0.145.0` |
-| **agy** | 273 rules, `command(git commit)` | **none** | `1.1.7` |
+| **agy** | 327 rules, `command(git commit)` | **none** | `1.1.7` |
 
 > **Last verified: 2026-07-28.** These CLIs ship fast — agy moved from `1.1.6` to `1.1.7` during a single afternoon of writing this. If the date above is old, treat the table as a starting point rather than fact.
 
@@ -152,7 +157,7 @@ These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](
 - **An allowlist is not a sandbox.** `Bash(python *)` allows `python -c 'anything'`, and `Bash(gcc *)` will happily compile and link whatever it is pointed at. This tool reduces prompt fatigue for trusted toolchains; it is not a containment boundary. If you need containment, use a devcontainer or your harness's sandbox mode.
 - **Bare `bash` and `sh` are deliberately not allowlisted.** `bash -c '<anything>'` would make every other rule here meaningless, so only `shellcheck`, `shfmt`, and the no-op `bash -n` are allowed; `bash -c` is in the ask list. If you allowlist `Bash(bash *)` yourself, understand that you have effectively turned the allowlist off.
 - **An `ask` rule shadows a more specific `allow` rule.** `Bash(npx *)` in ask would swallow `Bash(npx playwright *)` in allow. The rule lists are written to avoid overlaps entirely rather than depend on precedence; keep it that way when adding rules.
-- **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 273 rules are inert. Verify before relying on it.
+- **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 327 rules are inert. Verify before relying on it.
 - **A denied push rejects the whole command.** The guard scans every segment of a compound command, so `make test && git push origin main` is denied in its entirety — the build does not run first. This is deliberate (a guard should fail closed), but it surprises people who expect only the push to be blocked. Run the work and the push as separate commands.
 - **Bypass mode skips the rules.** If you run with `--dangerously-skip-permissions` anyway, allow/ask/deny are ignored wholesale — only the hook still fires.
 
