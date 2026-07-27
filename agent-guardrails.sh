@@ -113,6 +113,21 @@ ALLOW=(
   "Bash(terraform-docs *)" "Bash(infracost *)" "Bash(checkov *)" "Bash(tfsec *)"
   "Bash(packer validate *)" "Bash(packer fmt *)"
 
+  # ---- virtualization / hypervisors ----
+  # Broad allow for inspection, provisioning and boot; the destroy/undefine/
+  # power verbs are pulled back into ASK below. Note that most Proxmox tools
+  # only work as root, and `sudo` is denied — so on a hypervisor you are
+  # relying on already being root, not on this list granting anything.
+  "Bash(qm *)" "Bash(pct *)" "Bash(pvesm *)" "Bash(pvesh get *)"
+  "Bash(pveversion *)" "Bash(pvecm status *)" "Bash(pvecm nodes *)" "Bash(pveperf *)"
+  "Bash(virsh *)" "Bash(virt-what *)" "Bash(virt-df *)" "Bash(virt-inspector *)"
+  "Bash(virt-viewer *)" "Bash(virt-top *)" "Bash(virt-xml *)"
+  "Bash(VBoxManage *)" "Bash(vboxmanage *)" "Bash(VBoxHeadless *)"
+  "Bash(qemu-img info *)" "Bash(qemu-img check *)" "Bash(qemu-img create *)"
+  "Bash(qemu-img convert *)" "Bash(qemu-img map *)"
+  "Bash(qemu-system-x86_64 *)" "Bash(qemu-system-aarch64 *)"
+  "Bash(qemu-system-arm *)" "Bash(qemu-system-riscv64 *)" "Bash(qemu-ga *)"
+
   # ---- ansible ----
   # ansible-playbook itself is in ASK: it executes against real inventory.
   # The dry-run and read-only entry points are safe.
@@ -221,6 +236,29 @@ ASK=(
   "Bash(docker system prune *)" "Bash(docker volume rm *)" "Bash(docker rm -f *)"
   "Bash(podman system prune *)" "Bash(podman volume rm *)"
   "Bash(minikube delete *)" "Bash(kind delete *)"
+
+  # ---- virtualization: the destructive verbs ----
+  # `virsh destroy` is a hard power-off, not a delete; `undefine` is the delete.
+  # Both stop here. So does anything that writes to a guest disk image out from
+  # under a running VM, and qemu-nbd, which maps an image onto a host device.
+  "Bash(qm destroy *)" "Bash(qm stop *)" "Bash(qm reset *)" "Bash(qm rollback *)"
+  "Bash(qm set *)" "Bash(qm migrate *)" "Bash(qm resize *)" "Bash(qm template *)"
+  "Bash(pct destroy *)" "Bash(pct stop *)" "Bash(pct set *)" "Bash(pct migrate *)"
+  "Bash(pvesh create *)" "Bash(pvesh delete *)" "Bash(pvesh set *)"
+  "Bash(pvesm remove *)" "Bash(pveum *)"
+  "Bash(virsh destroy *)" "Bash(virsh undefine *)" "Bash(virsh shutdown *)"
+  "Bash(virsh reset *)" "Bash(virsh reboot *)" "Bash(virsh vol-delete *)"
+  "Bash(virsh pool-destroy *)" "Bash(virsh pool-undefine *)"
+  "Bash(virsh snapshot-delete *)" "Bash(virsh snapshot-revert *)"
+  "Bash(virsh blockcommit *)" "Bash(virsh detach-disk *)"
+  "Bash(virsh net-destroy *)" "Bash(virsh net-undefine *)"
+  "Bash(VBoxManage unregistervm *)" "Bash(VBoxManage controlvm *)"
+  "Bash(VBoxManage modifyvm *)" "Bash(VBoxManage snapshot *)"
+  "Bash(VBoxManage closemedium *)" "Bash(VBoxManage storagectl *)"
+  "Bash(qemu-nbd *)" "Bash(qemu-img resize *)" "Bash(qemu-img snapshot *)"
+  "Bash(qemu-img commit *)" "Bash(qemu-img rebase *)" "Bash(qemu-img amend *)"
+  "Bash(guestfish *)" "Bash(guestmount *)" "Bash(virt-install *)"
+  "Bash(virt-sysprep *)" "Bash(virt-resize *)" "Bash(virt-sparsify *)"
 )
 
 # ─────────────────────────────────────────────────────────────────── deny rules
@@ -241,6 +279,11 @@ DENY=(
   "Bash(docker push *)" "Bash(docker login *)" "Bash(podman push *)"
   "Bash(podman login *)" "Bash(buildah push *)" "Bash(skopeo copy *)"
   "Bash(helm push *)" "Bash(helm repo add *)"
+  # Cluster membership and auth changes on a hypervisor — effectively
+  # unrecoverable, and never something an agent should reach for.
+  "Bash(pvecm delnode *)" "Bash(pvecm add *)" "Bash(pveum user delete *)"
+  "Bash(pveum role delete *)" "Bash(pveum acl delete *)"
+  "Bash(virsh pool-delete *)" "Bash(VBoxManage unregistervm --delete *)"
   "Bash(curl * | sh)" "Bash(curl * | bash)" "Bash(wget * | sh)"
   "Read(//home/**/.ssh/**)" "Read(//home/**/.aws/credentials)"
   "Read(//home/**/.config/gcloud/**)" "Read(//**/.env.production)"
