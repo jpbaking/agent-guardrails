@@ -4,7 +4,7 @@
 
 Coding agents are fast right up until they aren't. Every `npm test`, every `git diff`, every `pytest -k foo` stops and waits for you to click yes. So people reach for the bypass flag — and enterprise admins, reasonably, turn it off.
 
-`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~455 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that refuses to push to `main`.
+`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~495 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that refuses to push to `main`.
 
 One command, all three agent CLIs:
 
@@ -18,7 +18,7 @@ scope: global (user-level)
   claude  ~/.claude/settings.json  (+guard)
   codex   ~/.codex/hooks.json  (guard only, deny-only mode)
   agy     ~/.gemini/antigravity-cli/settings.json
-allow=457 ask=267 deny=76
+allow=496 ask=272 deny=76
 ```
 
 ---
@@ -31,7 +31,7 @@ An allowlist is a different conversation. It's specific, it's reviewable, and it
 
 ## What you get
 
-**Auto-approved (457 rules)**
+**Auto-approved (496 rules)**
 
 | | |
 |---|---|
@@ -48,6 +48,7 @@ An allowlist is a different conversation. It's specific, it's reviewable, and it
 | python | `python`, `pytest`, `ruff`, `black`, `mypy`, `pip`, `venv`, `poetry`, `uv` |
 | rust | `cargo` build/test/check/run/clippy/fmt/doc/add/bench/nextest/audit, `rustc`, `rustfmt`, read-only `rustup` |
 | c/c++ | `gcc`, `g++`, `clang`, `ninja`, `ctest`, `meson`, `./configure`, `clang-format`, `clang-tidy`, `cppcheck`, `gdb`, `lldb`, `valgrind`, binutils |
+| debugging | `gdb`, `lldb`, `rust-gdb`, `rust-lldb`, `rr`, `strace`, `ltrace`, `perf`, `valgrind`, `heaptrack`, `gcov`/`lcov`, `gprof`, `llvm-cov`, `cargo miri`/`flamegraph`/`bloat`/`tarpaulin` |
 | go | `go` (build/test/vet/mod/run/generate), `gofmt`, `goimports`, `golangci-lint`, `staticcheck`, `dlv`, `govulncheck` |
 | gh | reads only, across all 23 commands — `pr view`/`diff`/`checks`/`checkout`, `issue view`/`list`, `run view`/`watch`/`download`, `release download`, `repo clone`, `gist view`, `project`/`ruleset`/`org`/`codespace` list-and-view, `config get`, `search` |
 | containers | `docker`, `docker compose`, `podman`, `buildah`, `dive`, `hadolint` — build, run, inspect, logs |
@@ -63,7 +64,7 @@ An allowlist is a different conversation. It's specific, it's reviewable, and it
 
 The infrastructure toolchains are allowed **broadly**, then the verbs that change reality are pulled back — a narrower `ask` rule always wins over a broader `allow`. So `terraform plan`, `kubectl get`, `helm diff`, and `docker build` run free, while these stop and ask:
 
-**Still prompts (267 rules)**
+**Still prompts (272 rules)**
 
 | | |
 |---|---|
@@ -81,6 +82,7 @@ The infrastructure toolchains are allowed **broadly**, then the verbs that chang
 | fetches and runs code | `cargo install`, `go install`, `rustup install`/`update`, `dotnet tool install`, `sdk install`, `dotnet nuget add source` |
 | drops a database | `rails db:drop`/`db:reset`/`destroy`, `rake db:drop`/`db:reset` |
 | manages private keys | `keytool` |
+| traces the whole system | `bpftrace`, `bpftool`, `sysdig`, `trace-cmd`, `perf trace` — root-level, sees every process |
 | reaches other machines | `aws`, `gcloud`, `az`, `ssh`, `scp`, `rsync` |
 | destroys uncommitted work | `git reset --hard`, `git clean`, `git rebase` |
 | talks to a database | `psql`, `mysql`, `mongosh`, `redis-cli`, `cqlsh`, `influx`, `etcdctl`, `sqlcmd`, `sqlplus` — wholesale, see limitations |
@@ -156,9 +158,9 @@ This is the part other tools gloss over. Each CLI's capabilities were determined
 
 | | allowlist | push guard | verified against |
 |---|---|---|---|
-| **Claude Code** | 457 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
+| **Claude Code** | 496 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
 | **Codex** | **none** — no allowlist mechanism exists | **deny only** | `0.145.0` |
-| **agy** | 451 rules, `command(git commit)` | **none** | `1.1.7` |
+| **agy** | 490 rules, `command(git commit)` | **none** | `1.1.7` |
 
 > **Last verified: 2026-07-28.** These CLIs ship fast — agy moved from `1.1.6` to `1.1.7` during a single afternoon of writing this. If the date above is old, treat the table as a starting point rather than fact.
 
@@ -187,7 +189,7 @@ These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](
 - **An allowlist is not a sandbox.** `Bash(python *)` allows `python -c 'anything'`, and `Bash(gcc *)` will happily compile and link whatever it is pointed at. This tool reduces prompt fatigue for trusted toolchains; it is not a containment boundary. If you need containment, use a devcontainer or your harness's sandbox mode.
 - **Bare `bash` and `sh` are deliberately not allowlisted.** `bash -c '<anything>'` would make every other rule here meaningless, so only `shellcheck`, `shfmt`, and the no-op `bash -n` are allowed; `bash -c` is in the ask list. If you allowlist `Bash(bash *)` yourself, understand that you have effectively turned the allowlist off.
 - **An `ask` rule shadows a more specific `allow` rule.** `Bash(npx *)` in ask would swallow `Bash(npx playwright *)` in allow. The rule lists are written to avoid overlaps entirely rather than depend on precedence; keep it that way when adding rules.
-- **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 451 rules are inert. Verify before relying on it.
+- **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 490 rules are inert. Verify before relying on it.
 - **A denied push rejects the whole command.** The guard scans every segment of a compound command, so `make test && git push origin main` is denied in its entirety — the build does not run first. This is deliberate (a guard should fail closed), but it surprises people who expect only the push to be blocked. Run the work and the push as separate commands.
 - **Bypass mode skips the rules.** If you run with `--dangerously-skip-permissions` anyway, allow/ask/deny are ignored wholesale — only the hook still fires.
 

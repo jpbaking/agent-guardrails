@@ -256,6 +256,28 @@ ALLOW=(
   "Bash(objdump *)" "Bash(nm *)" "Bash(readelf *)" "Bash(ldd *)"
   "Bash(ar *)" "Bash(ranlib *)" "Bash(strip *)" "Bash(size *)" "Bash(addr2line *)"
 
+  # ---- debugging & profiling (native: C, C++, Rust) ----
+  # These inspect and instrument processes rather than change the world, so
+  # they are allowed on the same footing as gdb, which was already here. Note
+  # gdb and strace can attach to a running process with -p, so this is not a
+  # narrower grant than what already existed. The kernel-wide tracers that
+  # need root — bpftrace, bpftool, sysdig — are in ASK instead.
+  "Bash(rust-gdb *)" "Bash(rust-lldb *)" "Bash(gdbserver *)" "Bash(cgdb *)"
+  "Bash(rr *)" "Bash(strace *)" "Bash(ltrace *)" "Bash(perf *)"
+  "Bash(heaptrack *)" "Bash(hotspot *)" "Bash(flamegraph *)"
+  "Bash(coredumpctl *)" "Bash(catchsegv *)" "Bash(c++filt *)" "Bash(objcopy *)"
+  "Bash(eu-readelf *)" "Bash(eu-stack *)" "Bash(pahole *)"
+  # valgrind's companion report tools
+  "Bash(ms_print *)" "Bash(callgrind_annotate *)" "Bash(cg_annotate *)"
+  # coverage and profile reporting
+  "Bash(gcov *)" "Bash(lcov *)" "Bash(genhtml *)" "Bash(gprof *)"
+  "Bash(llvm-cov *)" "Bash(llvm-profdata *)" "Bash(llvm-symbolizer *)"
+  # cargo has no broad allow, so debug subcommands are named individually
+  "Bash(cargo miri *)" "Bash(cargo flamegraph *)" "Bash(cargo bloat *)"
+  "Bash(cargo asm *)" "Bash(cargo llvm-cov *)" "Bash(cargo tarpaulin *)"
+  "Bash(cargo careful *)" "Bash(cargo valgrind *)" "Bash(cargo instruments *)"
+  "Bash(cargo profdata *)" "Bash(miri *)"
+
   # ---- gh (read-only subcommands only) ----
   # Every verb that writes to GitHub is in ASK; the irreversible and
   # credential-touching ones are in DENY. `gh api` is treated as a write tool
@@ -356,6 +378,11 @@ ASK=(
   "Bash(cargo install *)" "Bash(rustup install *)" "Bash(rustup update *)"
   "Bash(go install *)" "Bash(dotnet tool install *)" "Bash(sdk install *)"
   "Bash(keytool *)"   # manages keystores and private keys
+  # Kernel-wide tracing. Needs root, and observes every process on the box —
+  # not just the one you are debugging. Unlike gdb/strace, the scope is the
+  # whole system, so it gets a look before it runs.
+  "Bash(bpftrace *)" "Bash(bpftool *)" "Bash(sysdig *)" "Bash(trace-cmd *)"
+  "Bash(perf trace *)"
   # Drops a database. Overrides the broad rails/rake allows above.
   "Bash(rails db:drop *)" "Bash(rails db:reset *)" "Bash(rails destroy *)"
   "Bash(rake db:drop *)" "Bash(rake db:reset *)"
