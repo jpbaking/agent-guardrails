@@ -90,7 +90,36 @@ ALLOW=(
 
   # ---- build / test misc ----
   "Bash(make *)" "Bash(cmake *)" "Bash(just *)" "Bash(task *)"
-  "Bash(go test *)" "Bash(go build *)" "Bash(go vet *)" "Bash(gofmt *)"
+
+  # ---- go ----
+  "Bash(go *)" "Bash(gofmt *)" "Bash(goimports *)" "Bash(golangci-lint *)"
+  "Bash(staticcheck *)" "Bash(gotestsum *)" "Bash(gopls *)" "Bash(dlv *)"
+  "Bash(mockgen *)" "Bash(govulncheck *)" "Bash(goreleaser check *)"
+
+  # ---- containers ----
+  # Broad allow, with the outward-publishing and destructive verbs pulled back
+  # into ASK/DENY below. A narrower ask always wins over a broader allow.
+  "Bash(docker *)" "Bash(docker-compose *)" "Bash(docker compose *)"
+  "Bash(podman *)" "Bash(podman-compose *)" "Bash(buildah *)" "Bash(skopeo inspect *)"
+  "Bash(dive *)" "Bash(hadolint *)"
+
+  # ---- kubernetes ----
+  "Bash(kubectl *)" "Bash(helm *)" "Bash(kustomize *)" "Bash(k9s *)"
+  "Bash(kubectx *)" "Bash(kubens *)" "Bash(minikube *)" "Bash(kind *)"
+  "Bash(stern *)" "Bash(kubeconform *)" "Bash(kubeval *)" "Bash(helmfile diff *)"
+
+  # ---- infrastructure as code ----
+  "Bash(terraform *)" "Bash(tofu *)" "Bash(terragrunt *)" "Bash(tflint *)"
+  "Bash(terraform-docs *)" "Bash(infracost *)" "Bash(checkov *)" "Bash(tfsec *)"
+  "Bash(packer validate *)" "Bash(packer fmt *)"
+
+  # ---- ansible ----
+  # ansible-playbook itself is in ASK: it executes against real inventory.
+  # The dry-run and read-only entry points are safe.
+  "Bash(ansible-lint *)" "Bash(ansible-doc *)" "Bash(ansible-inventory *)"
+  "Bash(ansible-config *)" "Bash(ansible-galaxy *)" "Bash(ansible-vault view *)"
+  "Bash(ansible-playbook --check *)" "Bash(ansible-playbook --syntax-check *)"
+  "Bash(ansible-playbook --list-tasks *)" "Bash(ansible-playbook --list-hosts *)"
 
   # ---- rust ----
   "Bash(cargo build *)" "Bash(cargo test *)" "Bash(cargo clippy *)" "Bash(cargo fmt *)"
@@ -166,12 +195,32 @@ ASK=(
   "Bash(gh issue create *)" "Bash(gh api *)" "Bash(gh workflow run *)"
   "Bash(gh repo create *)" "Bash(gh gist create *)"
   "Bash(cargo install *)" "Bash(rustup install *)" "Bash(rustup update *)"
+  "Bash(go install *)"
   "Bash(git reset --hard *)" "Bash(git clean *)"
   "Bash(git rebase *)" "Bash(git filter-branch *)"
-  "Bash(docker *)" "Bash(podman *)" "Bash(kubectl *)" "Bash(helm *)"
-  "Bash(terraform *)" "Bash(aws *)" "Bash(gcloud *)" "Bash(az *)"
+  "Bash(aws *)" "Bash(gcloud *)" "Bash(az *)"
   "Bash(ssh *)" "Bash(scp *)" "Bash(rsync *)"
   "Bash(chmod *)" "Bash(chown *)"
+
+  # ---- the verbs that change reality ----
+  # These override the broad container/k8s/IaC allows above. Everything else in
+  # those toolchains — plan, diff, get, describe, logs, build, lint — runs free.
+  "Bash(terraform apply *)" "Bash(terraform destroy *)" "Bash(terraform import *)"
+  "Bash(terraform state rm *)" "Bash(terraform state mv *)" "Bash(terraform taint *)"
+  "Bash(tofu apply *)" "Bash(tofu destroy *)"
+  "Bash(terragrunt apply *)" "Bash(terragrunt destroy *)" "Bash(terragrunt run-all *)"
+  "Bash(kubectl apply *)" "Bash(kubectl delete *)" "Bash(kubectl patch *)"
+  "Bash(kubectl edit *)" "Bash(kubectl replace *)" "Bash(kubectl scale *)"
+  "Bash(kubectl exec *)" "Bash(kubectl drain *)" "Bash(kubectl cordon *)"
+  "Bash(kubectl rollout undo *)" "Bash(kubectl rollout restart *)"
+  "Bash(helm install *)" "Bash(helm upgrade *)" "Bash(helm uninstall *)"
+  "Bash(helm rollback *)" "Bash(helm delete *)"
+  # NB: no bare "ansible-playbook *" here — it would shadow the --check and
+  # --syntax-check allows above. Unlisted already prompts, so a real playbook
+  # run still stops for confirmation without killing the dry-run allowlist.
+  "Bash(docker system prune *)" "Bash(docker volume rm *)" "Bash(docker rm -f *)"
+  "Bash(podman system prune *)" "Bash(podman volume rm *)"
+  "Bash(minikube delete *)" "Bash(kind delete *)"
 )
 
 # ─────────────────────────────────────────────────────────────────── deny rules
@@ -187,6 +236,11 @@ DENY=(
   "Bash(gh repo delete *)" "Bash(gh auth token *)" "Bash(gh auth logout *)"
   "Bash(gh ssh-key add *)" "Bash(gh gpg-key add *)"
   "Bash(cargo login *)" "Bash(cargo owner *)" "Bash(cargo yank *)"
+  # Publishing images / logging in to registries — outward, same class as
+  # npm publish. Denied rather than asked so an agent cannot push an image.
+  "Bash(docker push *)" "Bash(docker login *)" "Bash(podman push *)"
+  "Bash(podman login *)" "Bash(buildah push *)" "Bash(skopeo copy *)"
+  "Bash(helm push *)" "Bash(helm repo add *)"
   "Bash(curl * | sh)" "Bash(curl * | bash)" "Bash(wget * | sh)"
   "Read(//home/**/.ssh/**)" "Read(//home/**/.aws/credentials)"
   "Read(//home/**/.config/gcloud/**)" "Read(//**/.env.production)"
