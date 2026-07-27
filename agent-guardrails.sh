@@ -255,18 +255,27 @@ ALLOW=(
   "Bash(ar *)" "Bash(ranlib *)" "Bash(strip *)" "Bash(size *)" "Bash(addr2line *)"
 
   # ---- gh (read-only subcommands only) ----
-  # Anything that writes to GitHub — pr create, pr merge, issue create, gh api —
-  # is deliberately absent so it falls through to a prompt. Destructive ones are
-  # in DENY. `gh api` is omitted because -X POST/DELETE makes it a write tool.
+  # Every verb that writes to GitHub is in ASK; the irreversible and
+  # credential-touching ones are in DENY. `gh api` is treated as a write tool
+  # because -X POST/DELETE makes it one. Downloads and clones are reads: they
+  # pull data onto this machine and change nothing on the remote.
   "Bash(gh pr view *)" "Bash(gh pr list *)" "Bash(gh pr diff *)"
-  "Bash(gh pr checks *)" "Bash(gh pr status *)"
+  "Bash(gh pr checks *)" "Bash(gh pr status *)" "Bash(gh pr checkout *)"
   "Bash(gh issue view *)" "Bash(gh issue list *)" "Bash(gh issue status *)"
   "Bash(gh repo view *)" "Bash(gh repo list *)" "Bash(gh repo clone *)"
   "Bash(gh run view *)" "Bash(gh run list *)" "Bash(gh run watch *)"
+  "Bash(gh run download *)"
   "Bash(gh workflow list *)" "Bash(gh workflow view *)"
-  "Bash(gh release view *)" "Bash(gh release list *)"
+  "Bash(gh release view *)" "Bash(gh release list *)" "Bash(gh release download *)"
   "Bash(gh label list *)" "Bash(gh search *)" "Bash(gh browse *)"
   "Bash(gh auth status *)" "Bash(gh status *)" "Bash(gh cache list *)"
+  "Bash(gh gist list *)" "Bash(gh gist view *)" "Bash(gh gist clone *)"
+  "Bash(gh alias list *)" "Bash(gh extension list *)" "Bash(gh completion *)"
+  "Bash(gh config get *)" "Bash(gh config list *)" "Bash(gh org list *)"
+  "Bash(gh variable list *)" "Bash(gh ruleset list *)" "Bash(gh ruleset view *)"
+  "Bash(gh ruleset check *)" "Bash(gh project list *)" "Bash(gh project view *)"
+  "Bash(gh project item-list *)" "Bash(gh project field-list *)"
+  "Bash(gh codespace list *)" "Bash(gh codespace view *)"
 
   # ---- shell scripting ----
   # NOTE: bare `bash`/`sh` are NOT allowlisted on purpose — `bash -c '<anything>'`
@@ -302,9 +311,46 @@ ASK=(
   "Bash(bash -c *)" "Bash(sh -c *)" "Bash(zsh -c *)"   # arbitrary execution
   "Bash(eval *)"   # NB: no bare "source *" here — it would shadow the
                    # venv-activation allow above and re-prompt every activate.
+  # ---- gh: everything that writes to GitHub ----
+  "Bash(gh api *)"
   "Bash(gh pr create *)" "Bash(gh pr merge *)" "Bash(gh pr close *)"
-  "Bash(gh issue create *)" "Bash(gh api *)" "Bash(gh workflow run *)"
-  "Bash(gh repo create *)" "Bash(gh gist create *)"
+  "Bash(gh pr comment *)" "Bash(gh pr review *)" "Bash(gh pr edit *)"
+  "Bash(gh pr ready *)" "Bash(gh pr reopen *)" "Bash(gh pr lock *)"
+  "Bash(gh pr unlock *)" "Bash(gh pr update-branch *)"
+  "Bash(gh issue create *)" "Bash(gh issue comment *)" "Bash(gh issue edit *)"
+  "Bash(gh issue close *)" "Bash(gh issue reopen *)" "Bash(gh issue pin *)"
+  "Bash(gh issue unpin *)" "Bash(gh issue transfer *)" "Bash(gh issue develop *)"
+  "Bash(gh issue lock *)" "Bash(gh issue unlock *)"
+  "Bash(gh repo create *)" "Bash(gh repo fork *)" "Bash(gh repo sync *)"
+  "Bash(gh repo edit *)" "Bash(gh repo rename *)" "Bash(gh repo archive *)"
+  "Bash(gh repo unarchive *)" "Bash(gh repo set-default *)" "Bash(gh repo deploy-key *)"
+  "Bash(gh workflow run *)" "Bash(gh workflow enable *)" "Bash(gh workflow disable *)"
+  "Bash(gh run rerun *)" "Bash(gh run cancel *)" "Bash(gh run delete *)"
+  "Bash(gh release edit *)" "Bash(gh release upload *)" "Bash(gh release delete-asset *)"
+  "Bash(gh gist create *)" "Bash(gh gist edit *)" "Bash(gh gist delete *)"
+  "Bash(gh gist rename *)"
+  "Bash(gh label create *)" "Bash(gh label edit *)" "Bash(gh label delete *)"
+  "Bash(gh label clone *)"
+  "Bash(gh project create *)" "Bash(gh project edit *)" "Bash(gh project copy *)"
+  "Bash(gh project close *)" "Bash(gh project delete *)" "Bash(gh project link *)"
+  "Bash(gh project unlink *)" "Bash(gh project item-add *)"
+  "Bash(gh project item-edit *)" "Bash(gh project item-delete *)"
+  "Bash(gh project item-archive *)" "Bash(gh project field-create *)"
+  "Bash(gh project field-delete *)" "Bash(gh project mark-template *)"
+  # Creates billable cloud resources and opens remote shells.
+  "Bash(gh codespace create *)" "Bash(gh codespace ssh *)" "Bash(gh codespace code *)"
+  "Bash(gh codespace cp *)" "Bash(gh codespace delete *)" "Bash(gh codespace stop *)"
+  "Bash(gh codespace rebuild *)" "Bash(gh codespace ports *)" "Bash(gh codespace edit *)"
+  "Bash(gh codespace logs *)" "Bash(gh codespace jupyter *)"
+  # Installs and runs third-party code from GitHub — supply chain.
+  "Bash(gh extension install *)" "Bash(gh extension upgrade *)"
+  "Bash(gh extension remove *)" "Bash(gh extension create *)"
+  "Bash(gh extension exec *)" "Bash(gh extension browse *)"
+  # Changes local gh/git state or credentials.
+  "Bash(gh auth login *)" "Bash(gh auth refresh *)" "Bash(gh auth switch *)"
+  "Bash(gh auth setup-git *)" "Bash(gh config set *)"
+  "Bash(gh alias set *)" "Bash(gh alias delete *)" "Bash(gh alias import *)"
+  "Bash(gh cache delete *)"
   "Bash(cargo install *)" "Bash(rustup install *)" "Bash(rustup update *)"
   "Bash(go install *)" "Bash(dotnet tool install *)" "Bash(sdk install *)"
   "Bash(keytool *)"   # manages keystores and private keys
@@ -414,6 +460,9 @@ DENY=(
   "Bash(gh release create *)" "Bash(gh secret *)" "Bash(gh variable set *)"
   "Bash(gh repo delete *)" "Bash(gh auth token *)" "Bash(gh auth logout *)"
   "Bash(gh ssh-key add *)" "Bash(gh gpg-key add *)"
+  "Bash(gh ssh-key delete *)" "Bash(gh gpg-key delete *)"
+  "Bash(gh release delete *)" "Bash(gh variable delete *)"
+  "Bash(gh ruleset delete *)"
   "Bash(cargo login *)" "Bash(cargo owner *)" "Bash(cargo yank *)"
   # Publishing images / logging in to registries — outward, same class as
   # npm publish. Denied rather than asked so an agent cannot push an image.

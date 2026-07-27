@@ -4,7 +4,7 @@
 
 Coding agents are fast right up until they aren't. Every `npm test`, every `git diff`, every `pytest -k foo` stops and waits for you to click yes. So people reach for the bypass flag — and enterprise admins, reasonably, turn it off.
 
-`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~435 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that refuses to push to `main`.
+`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~455 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that refuses to push to `main`.
 
 One command, all three agent CLIs:
 
@@ -18,7 +18,7 @@ scope: global (user-level)
   claude  ~/.claude/settings.json  (+guard)
   codex   ~/.codex/hooks.json  (guard only, deny-only mode)
   agy     ~/.gemini/antigravity-cli/settings.json
-allow=435 ask=186 deny=71
+allow=457 ask=267 deny=76
 ```
 
 ---
@@ -31,7 +31,7 @@ An allowlist is a different conversation. It's specific, it's reviewable, and it
 
 ## What you get
 
-**Auto-approved (435 rules)**
+**Auto-approved (457 rules)**
 
 | | |
 |---|---|
@@ -49,7 +49,7 @@ An allowlist is a different conversation. It's specific, it's reviewable, and it
 | rust | `cargo` build/test/check/run/clippy/fmt/doc/add/bench/nextest/audit, `rustc`, `rustfmt`, read-only `rustup` |
 | c/c++ | `gcc`, `g++`, `clang`, `ninja`, `ctest`, `meson`, `./configure`, `clang-format`, `clang-tidy`, `cppcheck`, `gdb`, `lldb`, `valgrind`, binutils |
 | go | `go` (build/test/vet/mod/run/generate), `gofmt`, `goimports`, `golangci-lint`, `staticcheck`, `dlv`, `govulncheck` |
-| gh | read-only only — `pr view`/`list`/`diff`/`checks`, `issue view`/`list`, `run view`/`watch`, `repo view`, `search` |
+| gh | reads only, across all 23 commands — `pr view`/`diff`/`checks`/`checkout`, `issue view`/`list`, `run view`/`watch`/`download`, `release download`, `repo clone`, `gist view`, `project`/`ruleset`/`org`/`codespace` list-and-view, `config get`, `search` |
 | containers | `docker`, `docker compose`, `podman`, `buildah`, `dive`, `hadolint` — build, run, inspect, logs |
 | kubernetes | `kubectl`, `helm`, `kustomize`, `k9s`, `stern`, `minikube`, `kind`, `kubeconform` |
 | iac | `terraform`, `tofu`, `terragrunt`, `tflint`, `checkov`, `tfsec`, `infracost`, `terraform-docs` |
@@ -63,7 +63,7 @@ An allowlist is a different conversation. It's specific, it's reviewable, and it
 
 The infrastructure toolchains are allowed **broadly**, then the verbs that change reality are pulled back — a narrower `ask` rule always wins over a broader `allow`. So `terraform plan`, `kubectl get`, `helm diff`, and `docker build` run free, while these stop and ask:
 
-**Still prompts (186 rules)**
+**Still prompts (267 rules)**
 
 | | |
 |---|---|
@@ -74,7 +74,10 @@ The infrastructure toolchains are allowed **broadly**, then the verbs that chang
 | changes or kills a VM | `qm destroy`/`stop`/`set`/`migrate`, `pct destroy`/`stop`, `pvesh create`/`delete`/`set`, `virsh destroy`/`undefine`/`shutdown`/`snapshot-revert`, `VBoxManage unregistervm`/`controlvm`/`modifyvm` |
 | writes into a guest disk | `qemu-nbd`, `qemu-img resize`/`snapshot`/`commit`/`rebase`, `guestfish`, `guestmount`, `virt-sysprep`, `virt-resize` |
 | arbitrary execution | `bash -c`, `sh -c`, `eval` |
-| writes to GitHub | `gh pr create`/`merge`, `gh issue create`, `gh api`, `gh workflow run` |
+| writes to GitHub | every mutating gh verb — `pr create`/`merge`/`comment`/`review`/`edit`, `issue create`/`comment`/`close`, `repo fork`/`sync`/`edit`/`archive`, `run rerun`/`cancel`, `workflow run`/`enable`, `release edit`/`upload`, `label`/`project` writes, `gh api` |
+| costs money / remote shell | `gh codespace create`/`ssh`/`code`/`cp`/`rebuild` |
+| third-party code | `gh extension install`/`upgrade`/`exec` |
+| changes gh or git state | `gh auth login`/`refresh`/`switch`/`setup-git`, `gh config set`, `gh alias set`, `gh cache delete` |
 | fetches and runs code | `cargo install`, `go install`, `rustup install`/`update`, `dotnet tool install`, `sdk install`, `dotnet nuget add source` |
 | drops a database | `rails db:drop`/`db:reset`/`destroy`, `rake db:drop`/`db:reset` |
 | manages private keys | `keytool` |
@@ -87,7 +90,7 @@ The infrastructure toolchains are allowed **broadly**, then the verbs that chang
 
 Anything not in any list also prompts — that's the default, and it does real work here. `npx` is the clearest case: only `npx playwright` is allowlisted, so every other `npx` invocation prompts without needing a rule. Same for `ansible-playbook` and bare `bash`.
 
-**Blocked outright (71 rules)** — `sudo`, `rm -rf /`, schema wipes (`dropdb`, `flyway clean`, `liquibase dropAll`, `prisma migrate reset`, `redis-cli flushall`/`flushdb`), every publish path (`npm publish`, `mvn deploy`, `gradle publish`, `twine upload`, `cargo publish`, `gem push`/`yank`/`owner`, `dotnet nuget push`, `gh release create`, and `docker push`/`login`, `podman push`, `helm push`), credential mutation (`gem signin`, `nuget setapikey`, `gh secret`, `gh auth token`, `gh ssh-key add`, `cargo login`), `gh repo delete`, cluster-membership and auth changes on a hypervisor (`pvecm delnode`/`add`, `pveum user`/`role`/`acl delete`, `virsh pool-delete`, `VBoxManage unregistervm --delete`), and reads of `~/.ssh`, `~/.aws/credentials`, `.env.production`.
+**Blocked outright (76 rules)** — `sudo`, `rm -rf /`, schema wipes (`dropdb`, `flyway clean`, `liquibase dropAll`, `prisma migrate reset`, `redis-cli flushall`/`flushdb`), every publish path (`npm publish`, `mvn deploy`, `gradle publish`, `twine upload`, `cargo publish`, `gem push`/`yank`/`owner`, `dotnet nuget push`, `gh release create`, and `docker push`/`login`, `podman push`, `helm push`), credential mutation (`gem signin`, `nuget setapikey`, `gh secret`, `gh auth token`/`logout`, `gh ssh-key`/`gpg-key add`/`delete`, `cargo login`), `gh repo delete`, `gh release delete`, `gh variable delete`, `gh ruleset delete`, cluster-membership and auth changes on a hypervisor (`pvecm delnode`/`add`, `pveum user`/`role`/`acl delete`, `virsh pool-delete`, `VBoxManage unregistervm --delete`), and reads of `~/.ssh`, `~/.aws/credentials`, `.env.production`.
 
 > **On the infrastructure and hypervisor tools:** allowing `terraform`, `kubectl`, `ansible`, `qm` or `virsh` at all is a bigger step than allowing `pytest`, because the blast radius is production rather than your laptop. The split above is the defensible default, not the only one. If your agents never touch infrastructure, delete those blocks. If you want `terraform apply` to run unattended in a sandboxed CI identity, move it from `ASK` to `ALLOW` — but do that deliberately, and not on a workstation holding production credentials.
 >
@@ -139,9 +142,9 @@ This is the part other tools gloss over. Each CLI's capabilities were determined
 
 | | allowlist | push guard | verified against |
 |---|---|---|---|
-| **Claude Code** | 435 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
+| **Claude Code** | 457 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
 | **Codex** | **none** — no allowlist mechanism exists | **deny only** | `0.145.0` |
-| **agy** | 429 rules, `command(git commit)` | **none** | `1.1.7` |
+| **agy** | 451 rules, `command(git commit)` | **none** | `1.1.7` |
 
 > **Last verified: 2026-07-28.** These CLIs ship fast — agy moved from `1.1.6` to `1.1.7` during a single afternoon of writing this. If the date above is old, treat the table as a starting point rather than fact.
 
@@ -170,7 +173,7 @@ These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](
 - **An allowlist is not a sandbox.** `Bash(python *)` allows `python -c 'anything'`, and `Bash(gcc *)` will happily compile and link whatever it is pointed at. This tool reduces prompt fatigue for trusted toolchains; it is not a containment boundary. If you need containment, use a devcontainer or your harness's sandbox mode.
 - **Bare `bash` and `sh` are deliberately not allowlisted.** `bash -c '<anything>'` would make every other rule here meaningless, so only `shellcheck`, `shfmt`, and the no-op `bash -n` are allowed; `bash -c` is in the ask list. If you allowlist `Bash(bash *)` yourself, understand that you have effectively turned the allowlist off.
 - **An `ask` rule shadows a more specific `allow` rule.** `Bash(npx *)` in ask would swallow `Bash(npx playwright *)` in allow. The rule lists are written to avoid overlaps entirely rather than depend on precedence; keep it that way when adding rules.
-- **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 429 rules are inert. Verify before relying on it.
+- **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 451 rules are inert. Verify before relying on it.
 - **A denied push rejects the whole command.** The guard scans every segment of a compound command, so `make test && git push origin main` is denied in its entirety — the build does not run first. This is deliberate (a guard should fail closed), but it surprises people who expect only the push to be blocked. Run the work and the push as separate commands.
 - **Bypass mode skips the rules.** If you run with `--dangerously-skip-permissions` anyway, allow/ask/deny are ignored wholesale — only the hook still fires.
 
