@@ -1,0 +1,15 @@
+# agent-guardrails — Codex enterprise requirements
+# Deploy to /etc/codex/requirements.toml
+#
+# This is the file that actually constrains users. Anything not listed here
+# cannot be selected, including via -c overrides or CLI flags.
+
+# Users may loosen to on-failure, but never to "never" (which is full auto).
+allowed_approval_policies = ["untrusted", "on-request", "on-failure"]
+
+# danger-full-access is deliberately absent — this is the setting that
+# corresponds to --dangerously-bypass-approvals-and-sandbox.
+allowed_sandbox_modes = ["read-only", "workspace-write"]
+
+# Who may approve an escalation. "user" = the human at the keyboard.
+allowed_approvals_reviewers = ["user"]

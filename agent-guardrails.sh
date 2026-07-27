@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+# agent-guardrails — one scoped permissions allowlist for every agent CLI on
+# this machine (Claude Code, Codex, agy), plus the git-push branch guard.
+#
+#   ./agent-guardrails.sh --global            # user-level, every harness
+#   ./agent-guardrails.sh --project [PATH]    # project/workspace-level (default: cwd)
+#   ./agent-guardrails.sh --print             # show what would be written, touch nothing
+#   ./agent-guardrails.sh --global --no-hook  # allowlist only, skip the push guard
+#   ./agent-guardrails.sh --print --managed   # shape as an enterprise policy proposal
+#
+# You pick the scope; the script handles the per-harness differences:
+#
+#   scope     Claude Code                 Codex                    agy
+#   global    ~/.claude/settings.json     ~/.codex/hooks.json      ~/.gemini/antigravity-cli/
+#                                                                    settings.json
+#   project   <p>/.claude/settings.json   <p>/.codex/hooks.json    trustedWorkspaces += <p>
+#
+# Capability differences, handled automatically:
+#   - Codex has no allowlist at all (approval_policy x sandbox_mode x trust_level
+#     instead), and its PreToolUse hooks may only return "deny" — so it gets the
+#     guard in --deny-only mode and no rules.
+#   - agy has no permissionDecision hook protocol, so it gets rules but no guard.
+#     It also has no per-project settings file; project scope adds the path to
+#     trustedWorkspaces in its global settings instead.
+#
+# Existing entries are preserved and de-duplicated, never replaced. Every file
+# is backed up to <file>.bak before any change. Re-running is idempotent.
+
+set -euo pipefail
+
+# The guard ships in this repo but is INSTALLED to a stable path outside it, so
+# the absolute path written into your config files keeps working even if you
+# move or delete the checkout. Override the destination with AGENT_GUARDRAILS_DIR.
+SELF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+GUARD_SRC="$SELF_DIR/hooks/git-push-guard.sh"
+GUARD="${AGENT_GUARDRAILS_DIR:-$HOME/.agents/hooks}/git-push-guard.sh"
+
+install_guard() {
+  [ -f "$GUARD_SRC" ] || return 0                 # running standalone, guard already deployed
+  mkdir -p "$(dirname "$GUARD")"
+  if ! cmp -s "$GUARD_SRC" "$GUARD"; then
+    cp "$GUARD_SRC" "$GUARD"
+    note "guard   installed -> $GUARD"
+  fi
+  chmod +x "$GUARD"
+}
+
+# ─────────────────────────────────────────────────────────────────── allow rules
+# Safe to run unattended: local, reversible, no outbound publish, no privilege
+# escalation. Prefix-match — "Bash(git status *)" also matches bare "git status".
+
+ALLOW=(
+  # ---- git: inspection ----
+  "Bash(git status *)" "Bash(git diff *)" "Bash(git log *)" "Bash(git show *)"
+  "Bash(git branch *)" "Bash(git remote *)" "Bash(git rev-parse *)"
+  "Bash(git describe *)" "Bash(git blame *)" "Bash(git shortlog *)"
+  "Bash(git ls-files *)" "Bash(git symbolic-ref *)" "Bash(git config --get *)"
+  # ---- git: local mutation (recoverable via reflog) ----
+  "Bash(git add *)" "Bash(git commit *)" "Bash(git restore *)"
+  "Bash(git switch *)" "Bash(git checkout *)" "Bash(git stash *)"
+  "Bash(git fetch *)" "Bash(git pull *)" "Bash(git merge *)"
+  "Bash(git cherry-pick *)" "Bash(git tag *)" "Bash(git worktree *)"
+  # NOTE: `git push` is deliberately absent — the guard decides it per-branch.
+  # Allowlisting it here would defeat the protected-branch check.
+
+  # ---- gradle / maven ----
+  "Bash(./gradlew *)" "Bash(gradle *)" "Bash(gradlew *)"
+  "Bash(mvn *)" "Bash(./mvnw *)" "Bash(mvnw *)"
+
+  # ---- node / js ----
+  "Bash(node *)" "Bash(npm *)" "Bash(yarn *)" "Bash(pnpm *)" "Bash(bun *)"
+  "Bash(nvm *)" "Bash(corepack *)"
+
+  # ---- typescript & js tooling ----
+  "Bash(tsc *)" "Bash(tsx *)" "Bash(ts-node *)" "Bash(eslint *)"
+  "Bash(prettier *)" "Bash(jest *)" "Bash(vitest *)" "Bash(playwright *)"
+  "Bash(biome *)" "Bash(esbuild *)" "Bash(vite *)" "Bash(turbo *)"
+
+  # ---- python ----
+  "Bash(python *)" "Bash(python3 *)" "Bash(pytest *)" "Bash(tox *)"
+  "Bash(ruff *)" "Bash(black *)" "Bash(mypy *)" "Bash(flake8 *)" "Bash(isort *)"
+  "Bash(poetry *)" "Bash(uv *)" "Bash(uvx *)" "Bash(pipx *)" "Bash(hatch *)"
+
+  # ---- pip & venv ----
+  "Bash(pip *)" "Bash(pip3 *)"
+  "Bash(python -m pip *)" "Bash(python3 -m pip *)"
+  "Bash(python -m venv *)" "Bash(python3 -m venv *)"
+  "Bash(virtualenv *)" "Bash(source *bin/activate)"
+  "Bash(.venv/bin/*)" "Bash(venv/bin/*)" "Bash(./.venv/bin/*)"
+
+  # ---- build / test misc ----
+  "Bash(make *)" "Bash(cmake *)" "Bash(just *)" "Bash(task *)"
+  "Bash(go test *)" "Bash(go build *)" "Bash(go vet *)" "Bash(gofmt *)"
+  "Bash(cargo build *)" "Bash(cargo test *)" "Bash(cargo clippy *)" "Bash(cargo fmt *)"
+
+  # ---- read-only shell ----
+  "Bash(ls *)" "Bash(pwd)" "Bash(cat *)" "Bash(head *)" "Bash(tail *)"
+  "Bash(wc *)" "Bash(grep *)" "Bash(rg *)" "Bash(fd *)" "Bash(find *)"
+  "Bash(which *)" "Bash(file *)" "Bash(stat *)" "Bash(du *)" "Bash(df *)"
+  "Bash(env)" "Bash(date *)" "Bash(jq *)" "Bash(yq *)" "Bash(tree *)"
+  "Bash(diff *)" "Bash(sort *)" "Bash(uniq *)" "Bash(echo *)"
+)
+
+# ─────────────────────────────────────────────────────────────────── ask rules
+# Allowed, but always confirmed: reaches off-machine, escalates, or destroys
+# work git cannot recover.
+ASK=(
+  "Bash(npx *)" "Bash(bunx *)"          # execute arbitrary remote packages
+  "Bash(git reset --hard *)" "Bash(git clean *)"
+  "Bash(git rebase *)" "Bash(git filter-branch *)"
+  "Bash(docker *)" "Bash(podman *)" "Bash(kubectl *)" "Bash(helm *)"
+  "Bash(terraform *)" "Bash(aws *)" "Bash(gcloud *)" "Bash(az *)"
+  "Bash(ssh *)" "Bash(scp *)" "Bash(rsync *)"
+  "Bash(chmod *)" "Bash(chown *)"
+)
+
+# ─────────────────────────────────────────────────────────────────── deny rules
+DENY=(
+  "Bash(sudo *)" "Bash(su *)" "Bash(doas *)"
+  "Bash(rm -rf /*)" "Bash(rm -rf ~*)" "Bash(mkfs*)" "Bash(dd if=*)"
+  "Bash(npm publish *)" "Bash(yarn publish *)" "Bash(pnpm publish *)"
+  "Bash(mvn deploy *)" "Bash(mvn release:*)"
+  "Bash(gradle publish*)" "Bash(./gradlew publish*)"
+  "Bash(twine upload *)" "Bash(poetry publish *)" "Bash(cargo publish *)"
+  "Bash(git push --mirror *)" "Bash(git push --all *)"
+  "Bash(gh release create *)" "Bash(gh secret *)"
+  "Bash(curl * | sh)" "Bash(curl * | bash)" "Bash(wget * | sh)"
+  "Read(//home/**/.ssh/**)" "Read(//home/**/.aws/credentials)"
+  "Read(//home/**/.config/gcloud/**)" "Read(//**/.env.production)"
+)
+
+# ───────────────────────────────────────────────────────────────────── plumbing
+
+arr() { printf '%s\n' "$@" | jq -R . | jq -s .; }
+
+# Translate Claude rule syntax into agy's.
+#   Bash(git status *) -> command(git status)      Read(//p/**) -> read_file(p/*)
+# agy's built-ins (command(npm test), command(tail -F)) are bare command
+# prefixes, so the trailing " *" is dropped rather than carried over.
+to_agy() {
+  local r out
+  for r in "$@"; do
+    case "$r" in
+      Bash\(*\)) out="${r#Bash(}"; out="${out%)}"; out="${out% \*}"; out="${out%\*}"
+                 out="${out%% }"; [ -n "$out" ] && printf 'command(%s)\n' "$out" ;;
+      Read\(*\)) out="${r#Read(}"; out="${out%)}"; out="${out#/}"
+                 printf 'read_file(%s)\n' "${out//\*\*/\*}" ;;
+    esac
+  done | sort -u
+}
+
+note() { printf '  %s\n' "$*"; }
+backup() { cp "$1" "$1.bak"; }
+ensure_json() {
+  mkdir -p "$(dirname "$1")"
+  [ -f "$1" ] || printf '%s\n' "${2:-\{\}}" > "$1"
+  jq -e . "$1" >/dev/null || { echo "$1 is not valid JSON — fix it first" >&2; exit 1; }
+}
+
+# ── writers ───────────────────────────────────────────────────────────────────
+
+write_claude() { # $1 = settings.json path
+  local f=$1
+  ensure_json "$f" '{}'
+  backup "$f"
+  jq \
+    --argjson allow "$(arr "${ALLOW[@]}")" \
+    --argjson ask   "$(arr "${ASK[@]}")" \
+    --argjson deny  "$(arr "${DENY[@]}")" \
+    --arg cmd "bash '$GUARD'" --argjson hook "$DO_HOOK" '
+    .permissions //= {}
+    | .permissions.allow = ((.permissions.allow // []) + $allow | unique)
+    | .permissions.ask   = ((.permissions.ask   // []) + $ask   | unique)
+    | .permissions.deny  = ((.permissions.deny  // []) + $deny  | unique)
+    | if $hook == 1 then
+        .hooks //= {} | .hooks.PreToolUse //= []
+        | .hooks.PreToolUse |= (
+            map(.hooks //= [] | .hooks |= map(select(.command | test("git-push-guard\\.sh") | not)))
+            | map(select(.hooks | length > 0))
+            + [{matcher: "Bash",
+                hooks: [{type: "command", command: $cmd, timeout: 10,
+                         statusMessage: "Checking push target..."}]}])
+      else . end
+  ' "$f.bak" > "$f"
+  note "claude  $f  (+guard)"
+}
+
+write_codex() { # $1 = .codex dir
+  local d=$1 f="$1/hooks.json" toml="$1/config.toml"
+  [ "$DO_HOOK" -eq 1 ] || { note "codex   skipped (--no-hook; Codex gets no rules, only the guard)"; return; }
+  ensure_json "$f" '{"hooks":{}}'
+  backup "$f"
+  # Codex PreToolUse accepts permissionDecision "deny" and nothing else.
+  jq --arg cmd "bash '$GUARD' --deny-only" '
+    .hooks //= {} | .hooks.PreToolUse //= []
+    | .hooks.PreToolUse |= (
+        map(select((.hooks // []) | any(.command == $cmd) | not))
+        + [{matcher: "shell",
+            hooks: [{type: "command", command: $cmd, timeout: 10,
+                     statusMessage: "Checking push target..."}]}])
+  ' "$f.bak" > "$f"
+  note "codex   $f  (guard only, deny-only mode)"
+
+  if [ -f "$toml" ] && grep -qE '^[[:space:]]*hooks[[:space:]]*=[[:space:]]*true' "$toml"; then
+    :
+  elif [ -f "$toml" ] && grep -qE '^\[features\]' "$toml"; then
+    note "        ! add 'hooks = true' under the existing [features] in $toml"
+  else
+    printf '\n[features]\nhooks = true\n' >> "$toml"
+    note "        + [features] hooks = true -> $toml"
+  fi
+}
+
+write_agy() { # $1 = settings.json path, $2 = optional workspace to trust
+  local f=$1 ws=${2:-}
+  [ -f "$f" ] || { note "agy     skipped ($f not found — run agy once first)"; return; }
+  jq -e . "$f" >/dev/null || { echo "$f is not valid JSON" >&2; exit 1; }
+  backup "$f"
+  jq \
+    --argjson allow "$(to_agy "${ALLOW[@]}" | jq -R . | jq -s .)" \
+    --argjson ask   "$(to_agy "${ASK[@]}"   | jq -R . | jq -s .)" \
+    --argjson deny  "$(to_agy "${DENY[@]}"  | jq -R . | jq -s .)" \
+    --arg ws "$ws" '
+    .permissions //= {}
+    | .permissions.allow = ((.permissions.allow // []) + $allow | unique)
+    | .permissions.ask   = ((.permissions.ask   // []) + $ask   | unique)
+    | .permissions.deny  = ((.permissions.deny  // []) + $deny  | unique)
+    | if $ws != "" then .trustedWorkspaces = ((.trustedWorkspaces // []) + [$ws] | unique)
+      else . end
+  ' "$f.bak" > "$f"
+  note "agy     $f"
+  [ -n "$ws" ] && note "        + trustedWorkspaces += $ws  (agy has no per-project settings file)"
+  note "        no guard — agy hooks have no permissionDecision protocol"
+}
+
+# ───────────────────────────────────────────────────────────────────── dispatch
+
+usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+SCOPE=""; PROJ=""; DO_HOOK=1; MANAGED=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --global|--user)      SCOPE="global" ;;
+    --project|--workspace) SCOPE="project"
+                          case "${2:-}" in -*|"") ;; *) PROJ="$2"; shift ;; esac ;;
+    --print)              SCOPE="print" ;;
+    --managed)            MANAGED=1 ;;
+    --no-hook)            DO_HOOK=0 ;;
+    -h|--help)            usage 0 ;;
+    *) echo "unknown option: $1" >&2; usage 1 ;;
+  esac
+  shift
+done
+
+command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+[ -n "$SCOPE" ] || usage 1
+
+if [ "$SCOPE" = "print" ]; then
+  jq -n \
+    --argjson allow "$(arr "${ALLOW[@]}")" --argjson ask "$(arr "${ASK[@]}")" \
+    --argjson deny "$(arr "${DENY[@]}")" --argjson managed "$MANAGED" \
+    --argjson agy_allow "$(to_agy "${ALLOW[@]}" | jq -R . | jq -s .)" \
+    --argjson agy_ask "$(to_agy "${ASK[@]}" | jq -R . | jq -s .)" \
+    --argjson agy_deny "$(to_agy "${DENY[@]}" | jq -R . | jq -s .)" '
+    {claude: ({permissions: {allow: $allow, ask: $ask, deny: $deny}}
+              + (if $managed == 1 then {allowManagedPermissionRulesOnly: true} else {} end)),
+     agy: {permissions: {allow: $agy_allow, ask: $agy_ask, deny: $agy_deny}},
+     codex: "no allowlist — approval_policy x sandbox_mode x trust_level; enterprise: /etc/codex/managed_config.toml"}'
+  exit 0
+fi
+
+if [ "$DO_HOOK" -eq 1 ]; then
+  install_guard
+  [ -x "$GUARD" ] || { echo "guard not found at $GUARD (expected it at $GUARD_SRC)" >&2; exit 1; }
+fi
+
+if [ "$SCOPE" = "global" ]; then
+  echo "scope: global (user-level)"
+  write_claude "${HOME}/.claude/settings.json"
+  write_codex  "${HOME}/.codex"
+  write_agy    "${HOME}/.gemini/antigravity-cli/settings.json"
+else
+  PROJ=$(cd "${PROJ:-$PWD}" && pwd)
+  echo "scope: project ($PROJ)"
+  write_claude "$PROJ/.claude/settings.json"
+  write_codex  "$PROJ/.codex"
+  write_agy    "${HOME}/.gemini/antigravity-cli/settings.json" "$PROJ"
+fi
+
+echo "allow=${#ALLOW[@]} ask=${#ASK[@]} deny=${#DENY[@]}  guard=$([ "$DO_HOOK" -eq 1 ] && echo "$GUARD" || echo none)"
+echo "backups written alongside each file as <file>.bak"

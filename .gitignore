@@ -1,0 +1,23 @@
+# Agent harness folders — these hold machine-local config and session state,
+# and this tool writes into them. Never commit them.
+.claude/
+.codex/
+.agy/
+.gemini/
+.antigravity/
+.agents/
+.goal-ledger/
+.cursor/
+AGENTS.md.local
+
+# Backups this tool creates before every write
+*.bak
+
+# Scratch / local
+tmp/
+scratch/
+.venv/
+venv/
+node_modules/
+.DS_Store
+*.log

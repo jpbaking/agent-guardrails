@@ -1,0 +1,21 @@
+# agent-guardrails — Codex enterprise policy
+# Deploy to /etc/codex/managed_config.toml
+#
+# Codex has NO per-command allowlist. Gating is approval_policy x sandbox_mode
+# x per-project trust_level, so this file sets a default posture rather than a
+# rule list. Pair it with requirements.toml, which pins what users may change.
+
+# Prompt only when the model asks for an escalation, not for ordinary work.
+approval_policy = "on-request"
+
+# Writes confined to the workspace; network egress controlled separately.
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+# Keep /tmp writable for build tooling; drop this if your threat model needs it.
+exclude_tmpdir_env_var = false
+exclude_slash_tmp = false
+
+[features]
+# Required for the git-push guard to run at all.
+hooks = true
