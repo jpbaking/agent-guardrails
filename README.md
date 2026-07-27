@@ -4,7 +4,7 @@
 
 Coding agents are fast right up until they aren't. Every `npm test`, every `git diff`, every `pytest -k foo` stops and waits for you to click yes. So people reach for the bypass flag — and enterprise admins, reasonably, turn it off.
 
-`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~410 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that refuses to push to `main`.
+`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~435 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that refuses to push to `main`.
 
 One command, all three agent CLIs:
 
@@ -18,7 +18,7 @@ scope: global (user-level)
   claude  ~/.claude/settings.json  (+guard)
   codex   ~/.codex/hooks.json  (guard only, deny-only mode)
   agy     ~/.gemini/antigravity-cli/settings.json
-allow=413 ask=181 deny=71
+allow=435 ask=186 deny=71
 ```
 
 ---
@@ -31,7 +31,7 @@ An allowlist is a different conversation. It's specific, it's reviewable, and it
 
 ## What you get
 
-**Auto-approved (413 rules)**
+**Auto-approved (435 rules)**
 
 | | |
 |---|---|
@@ -57,12 +57,13 @@ An allowlist is a different conversation. It's specific, it's reviewable, and it
 | virtualization | `qm`, `pct`, `pvesm`, `pvesh get`, `virsh`, `VBoxManage`, `qemu-system-*`, `qemu-img info`/`create`/`convert` |
 | playwright | `playwright`, `npx playwright`, `pnpm exec playwright`, `python -m playwright` |
 | shell | `shellcheck`, `shfmt`, and the no-op syntax check `bash -n` |
+| office docs | [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI) — `view`, `get`, `query`, `validate`, `create`, `set`, `add`, `move`, `merge`, `batch`, `dump`, `watch` on .docx/.xlsx/.pptx |
 | databases | local engines only — `sqlite3`, `duckdb`; plus `sqlfluff`/`sqlfmt` linters and read-only migration verbs (`flyway info`, `alembic current`, `prisma validate`, `dbt compile`) |
 | misc | `make`, `cmake`, `just`, and read-only shell (`ls`, `cat`, `grep`, `rg`, `jq`, …) |
 
 The infrastructure toolchains are allowed **broadly**, then the verbs that change reality are pulled back — a narrower `ask` rule always wins over a broader `allow`. So `terraform plan`, `kubectl get`, `helm diff`, and `docker build` run free, while these stop and ask:
 
-**Still prompts (181 rules)**
+**Still prompts (186 rules)**
 
 | | |
 |---|---|
@@ -81,6 +82,7 @@ The infrastructure toolchains are allowed **broadly**, then the verbs that chang
 | destroys uncommitted work | `git reset --hard`, `git clean`, `git rebase` |
 | talks to a database | `psql`, `mysql`, `mongosh`, `redis-cli`, `cqlsh`, `influx`, `etcdctl`, `sqlcmd`, `sqlplus` — wholesale, see limitations |
 | moves bulk data | `pg_dump`/`pg_restore`, `mysqldump`, `mongodump`/`mongorestore`/`mongoimport` |
+| edits documents irreversibly | `officecli remove`, `officecli raw-set`; plus `officecli install`/`mcp` (change your environment or start a server) |
 | writes a schema | `flyway migrate`, `liquibase update`, `alembic upgrade`/`downgrade`, `prisma migrate`, `dbt run`/`build`, `knex migrate`, `atlas schema apply`, `goose up` |
 
 Anything not in any list also prompts — that's the default, and it does real work here. `npx` is the clearest case: only `npx playwright` is allowlisted, so every other `npx` invocation prompts without needing a rule. Same for `ansible-playbook` and bare `bash`.
@@ -137,9 +139,9 @@ This is the part other tools gloss over. Each CLI's capabilities were determined
 
 | | allowlist | push guard | verified against |
 |---|---|---|---|
-| **Claude Code** | 413 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
+| **Claude Code** | 435 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
 | **Codex** | **none** — no allowlist mechanism exists | **deny only** | `0.145.0` |
-| **agy** | 407 rules, `command(git commit)` | **none** | `1.1.7` |
+| **agy** | 429 rules, `command(git commit)` | **none** | `1.1.7` |
 
 > **Last verified: 2026-07-28.** These CLIs ship fast — agy moved from `1.1.6` to `1.1.7` during a single afternoon of writing this. If the date above is old, treat the table as a starting point rather than fact.
 
@@ -162,12 +164,13 @@ These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](
 ## Honest limitations
 
 - **`deny` rules on pipes are decorative.** `Bash(curl * | sh)` cannot reliably catch pipe-to-shell — prefix matching isn't a parser, and a rewritten command sidesteps it. Those entries document intent; they are not enforcement.
+- **`officecli batch` is an escape hatch around its own gates.** `remove` and `raw-set` sit in `ask`, but `batch` reads a list of operations from stdin or `--input` and those operations can include removals. `batch` is allowed because it is the efficient path an agent should take, and the blast radius is a local document file — but the `remove` gate is best-effort, not a boundary. The same is true of `dump`, which round-trips a document to replayable JSON.
 - **The allowlist cannot see inside a query string.** This is why database clients are treated differently from every other toolchain here. With `terraform` or `kubectl` the dangerous verb is the first token, so a narrow `ask` catches `apply` and `destroy` while `plan` and `get` run free. With `psql`, the destructive part is *inside the argument* — `psql -c 'DROP TABLE users'` is indistinguishable from a `SELECT` to prefix matching. So `psql`, `mysql`, `mongosh`, `redis-cli` and friends sit in `ask` wholesale rather than being split by verb. The `redis-cli flushall` deny rules are best-effort for the same reason, and are case-sensitive while redis commands are not.
 - **`npm run` executes whatever the project defines.** It is allowed, via the broad `npm`/`yarn`/`pnpm` rules, and it is the workhorse — most JS and React work is `npm run dev`, `npm run build`, `npm test`. That is the right call *for repositories you trust*, because the scripts are curated by the project. It is exactly the wrong call for a repo the agent just cloned: `npm run` and `npm install` (via `postinstall` hooks) are the widest arbitrary-execution paths on the JS side. If your agents clone untrusted code, that is a sandbox problem, not an allowlist one.
 - **An allowlist is not a sandbox.** `Bash(python *)` allows `python -c 'anything'`, and `Bash(gcc *)` will happily compile and link whatever it is pointed at. This tool reduces prompt fatigue for trusted toolchains; it is not a containment boundary. If you need containment, use a devcontainer or your harness's sandbox mode.
 - **Bare `bash` and `sh` are deliberately not allowlisted.** `bash -c '<anything>'` would make every other rule here meaningless, so only `shellcheck`, `shfmt`, and the no-op `bash -n` are allowed; `bash -c` is in the ask list. If you allowlist `Bash(bash *)` yourself, understand that you have effectively turned the allowlist off.
 - **An `ask` rule shadows a more specific `allow` rule.** `Bash(npx *)` in ask would swallow `Bash(npx playwright *)` in allow. The rule lists are written to avoid overlaps entirely rather than depend on precedence; keep it that way when adding rules.
-- **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 407 rules are inert. Verify before relying on it.
+- **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 429 rules are inert. Verify before relying on it.
 - **A denied push rejects the whole command.** The guard scans every segment of a compound command, so `make test && git push origin main` is denied in its entirety — the build does not run first. This is deliberate (a guard should fail closed), but it surprises people who expect only the push to be blocked. Run the work and the push as separate commands.
 - **Bypass mode skips the rules.** If you run with `--dangerously-skip-permissions` anyway, allow/ask/deny are ignored wholesale — only the hook still fires.
 

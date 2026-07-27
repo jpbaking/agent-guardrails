@@ -169,6 +169,21 @@ ALLOW=(
   "Bash(dbt compile *)" "Bash(dbt parse *)" "Bash(dbt ls *)" "Bash(dbt debug *)"
   "Bash(dbt deps *)" "Bash(dbt docs generate *)"
 
+  # ---- office documents (OfficeCLI) ----
+  # github.com/iOfficeAI/OfficeCLI — reads and edits .docx/.xlsx/.pptx.
+  # The editing verbs ARE the point of the tool, and their blast radius is a
+  # local file, so they are allowed. Held back below: `remove` and `raw-set`
+  # (irreversible content/XML surgery), `install` and `mcp` (they change your
+  # environment or start a server), and `config set`.
+  "Bash(officecli view *)" "Bash(officecli get *)" "Bash(officecli query *)"
+  "Bash(officecli raw *)" "Bash(officecli validate *)" "Bash(officecli help *)"
+  "Bash(officecli load_skill *)" "Bash(officecli create *)"
+  "Bash(officecli set *)" "Bash(officecli add *)" "Bash(officecli move *)"
+  "Bash(officecli swap *)" "Bash(officecli merge *)" "Bash(officecli refresh *)"
+  "Bash(officecli dump *)" "Bash(officecli batch *)" "Bash(officecli add-part *)"
+  "Bash(officecli open *)" "Bash(officecli close *)" "Bash(officecli watch *)"
+  "Bash(officecli config get *)" "Bash(officecli plugins list *)"
+
   # ---- build / test misc ----
   "Bash(make *)" "Bash(cmake *)" "Bash(just *)" "Bash(task *)"
 
@@ -303,6 +318,14 @@ ASK=(
   "Bash(npm exec *)" "Bash(pnpm dlx *)" "Bash(yarn dlx *)" "Bash(bun x *)"
   # Reaches Expo's build servers (and can cost money).
   "Bash(eas build *)" "Bash(expo login *)"
+
+  # ---- officecli: irreversible edits and environment changes ----
+  # `install` places a binary, skills and an MCP server into your environment;
+  # `mcp` starts a server that exposes this capability to other tools. Neither
+  # is document editing, and both deserve a look before they run.
+  "Bash(officecli remove *)" "Bash(officecli raw-set *)"
+  "Bash(officecli install *)" "Bash(officecli mcp *)"
+  "Bash(officecli config set *)"
 
   # ---- database clients and migrations ----
   # Listed explicitly rather than left unlisted so the intent is documented:
