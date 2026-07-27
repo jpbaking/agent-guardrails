@@ -55,7 +55,7 @@ strings "$A" | grep -oE '(command|read_file|write_file|unsandboxed)\([^)]{0,30}\
 strings "$A" | grep -oE '"(allow|deny|ask|permissions|hooks)"' | sort -u
 ```
 
-If a constraint changed, update both the code **and** the capability table in `README.md`. Record the version you verified against.
+If a constraint changed, update the code **and** the capability table in `README.md` — including its `verified against` column and the **Last verified** date beneath it. A stale date is a warning to readers; a fresh date on unverified claims is a lie to them. Only bump the date for versions you actually ran the commands against.
 
 ## Verification
 

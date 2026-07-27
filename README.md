@@ -81,17 +81,19 @@ Every write is additive, de-duplicated, idempotent, and backed up to `<file>.bak
 
 This is the part other tools gloss over. Each CLI's capabilities were determined by reading its binary, not by guessing:
 
-| | allowlist | push guard |
-|---|---|---|
-| **Claude Code** | 111 rules, `Bash(git commit *)` | full — allow, ask, and deny |
-| **Codex** | **none** — no allowlist mechanism exists | **deny only** |
-| **agy** | 107 rules, `command(git commit)` | **none** |
+| | allowlist | push guard | verified against |
+|---|---|---|---|
+| **Claude Code** | 111 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
+| **Codex** | **none** — no allowlist mechanism exists | **deny only** | `0.145.0` |
+| **agy** | 107 rules, `command(git commit)` | **none** | `1.1.7` |
+
+> **Last verified: 2026-07-28.** These CLIs ship fast — agy moved from `1.1.6` to `1.1.7` during a single afternoon of writing this. If the date above is old, treat the table as a starting point rather than fact.
 
 **Codex** has no per-command allowlist at all. Its gating is `approval_policy` × `sandbox_mode` × `[projects.*] trust_level`. And its hook engine rejects anything but a denial — the binary literally carries the string `PreToolUse hook returned unsupported permissionDecision:allow`. So Codex gets the guard in `--deny-only` mode and no rules. That composes well: if your Codex is already on a trusted project with full access, the guard carves protected branches back out.
 
 **agy** has the allowlist (its own syntax: `command(…)`, `read_file(…)`, `write_file(…)`) but no `permissionDecision` protocol in its hooks, so the guard can't run there. Worth knowing: agy asks on `command(*)` by default — *every* shell command — so the allowlist is the whole win there.
 
-Verified against Codex `0.145.0` and agy `1.1.6`. These are reverse-engineered constraints; see [CONTRIBUTING.md](CONTRIBUTING.md) for how to re-verify when they ship a new version.
+These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](CONTRIBUTING.md) has the exact commands to re-verify them against a new release — please update the table and its date in the same PR.
 
 ## For your admins
 
