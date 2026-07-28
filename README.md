@@ -18,7 +18,7 @@ scope: global (user-level)
   claude  ~/.claude/settings.json  (+guard)
   codex   ~/.codex/hooks.json  (guard only, deny-only mode)
   agy     ~/.gemini/antigravity-cli/settings.json
-allow=496 ask=272 deny=76
+allow=495 ask=272 deny=76
 ```
 
 ---
@@ -29,9 +29,11 @@ Because you won't get it, and you shouldn't. Bypass mode is all-or-nothing: it t
 
 An allowlist is a different conversation. It's specific, it's reviewable, and it's the thing managed settings were built for. `--print` gives you a JSON fragment you can attach to a ticket, and `enterprise/` gives your admins drop-in policy files. That request gets approved.
 
+If you *do* want bypass anyway — on a throwaway VM, in a container, on a machine where nothing matters — [`--permissive`](#fully-permissive-mode) writes it into your configs for all three CLIs so you stop typing the flag. It is the opposite of the rest of this tool, and it says so before it runs.
+
 ## What you get
 
-**Auto-approved (496 rules)**
+**Auto-approved (495 rules)**
 
 | | |
 |---|---|
@@ -133,9 +135,34 @@ The guard is copied to `~/.agents/hooks/` so the absolute path written into your
 ./agent-guardrails.sh --print           # show the JSON, touch nothing
 ./agent-guardrails.sh --global --no-hook  # rules only, skip the guard
 ./agent-guardrails.sh --global --uninstall  # remove everything it added
+./agent-guardrails.sh --global --permissive # turn the guardrails OFF entirely
 ```
 
-Every write is additive, de-duplicated, idempotent, and backed up to `<file>.bak` first. Your existing rules, hooks, model, and theme survive. Run it twice and nothing changes.
+Every write is additive, de-duplicated, idempotent, and backed up to `<file>.bak` first. Your existing rules, hooks, model, and theme survive. Run it twice and nothing changes. (`--permissive` is the one exception — see below.)
+
+### Fully permissive mode
+
+```bash
+./agent-guardrails.sh --global --permissive      # every project on this machine
+./agent-guardrails.sh --project . --permissive   # one project
+./agent-guardrails.sh --print --permissive       # show it, touch nothing
+```
+
+The inverse of everything else here: it removes the gate rather than scoping it. This is `--dangerously-skip-permissions` and `--dangerously-bypass-approvals-and-sandbox` written into your config files so you stop passing the flag.
+
+| | permissive mode writes |
+|---|---|
+| **Claude Code** | `defaultMode: "bypassPermissions"`, plus catch-all `Bash(*)`/`Read(*)`/`Write(*)`/… rules so it still holds if a managed policy strips `defaultMode`. `ask` and `deny` set to `[]`. Guard removed. |
+| **Codex** | `approval_policy = "never"`, `sandbox_mode = "danger-full-access"` in `config.toml`; `--project` also adds `[projects."<path>"] trust_level = "trusted"` to the global config. Guard removed. |
+| **agy** | `command(*)`, `read_file(*)`, `write_file(*)` in `allow` — the exact inverse of its default, which is to *ask* on `command(*)`. `ask`/`deny` emptied, `allowNonWorkspaceAccess: true`. |
+
+It prints what it is about to do and waits for you to type `yes`; `--yes` skips that, and it refuses to run non-interactively without it. `--managed` and `--permissive` together are an error — one pins policy centrally, the other removes it.
+
+**It clears `ask` and `deny` outright, including rules you added yourself.** That is the mode, not an oversight — a deny rule you wrote is still a gate. `<file>.bak` is your only way back, and it is single-level. Codex's `config.toml` is the exception: keys it displaces are commented out with a `#agent-guardrails-disabled#` tag rather than deleted, so uninstall restores them exactly.
+
+Use it in a container or a VM you can throw away. If your reason for wanting it is prompt fatigue, the allowlist is the answer to that and this is not.
+
+Both `--uninstall` and a plain re-install undo it: installing normally over a permissive install strips `defaultMode`, the catch-all rules, the `config.toml` block and the trust entry before writing the real rules back, so you never end up with rules that a bypass switch is quietly ignoring.
 
 ### Uninstalling
 
@@ -146,7 +173,9 @@ Every write is additive, de-duplicated, idempotent, and backed up to `<file>.bak
 
 This **subtracts exactly the rules it added** and strips the guard hook — it does not restore `<file>.bak`. That matters: `.bak` is single-level and overwritten on every run, so after two installs it holds your previous *installed* state, not your original config. Subtraction gets you back to a genuinely clean file however many times you have run it, and it is idempotent and safe on a config that never had it installed.
 
-Two things it deliberately leaves behind: the guard script itself (it prints the path and the `rm` for you, in case a project-scope install still references it), and `[features] hooks = true` in Codex's `config.toml`, since your other hooks may need it. On agy it leaves `trustedWorkspaces` alone.
+Two things it deliberately leaves behind: the guard script itself (it prints the path and the `rm` for you, in case a project-scope install still references it), and `[features] hooks = true` in Codex's `config.toml`, since your other hooks may need it. On agy it leaves `trustedWorkspaces` and `allowNonWorkspaceAccess` alone.
+
+It also undoes a `--permissive` install: the `config.toml` block goes, the keys that block displaced are un-commented back to their original values, the `[projects."<path>"]` trust entry added for a project is removed, and `defaultMode: bypassPermissions` is deleted. Uninstalling gets you to *no rules*, not back to the permissive state.
 
 Rules the project shipped in earlier versions and has since retired are subtracted too, so an uninstall is clean even if you installed an old version. One caveat remains: if a rule of your own is byte-identical to one of ours, uninstall removes it too — after the fact there is no way to tell them apart.
 
@@ -158,7 +187,7 @@ This is the part other tools gloss over. Each CLI's capabilities were determined
 
 | | allowlist | push guard | verified against |
 |---|---|---|---|
-| **Claude Code** | 496 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
+| **Claude Code** | 495 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
 | **Codex** | **none** — no allowlist mechanism exists | **deny only** | `0.145.0` |
 | **agy** | 490 rules, `command(git commit)` | **none** | `1.1.7` |
 
@@ -191,7 +220,7 @@ These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](
 - **An `ask` rule shadows a more specific `allow` rule.** `Bash(npx *)` in ask would swallow `Bash(npx playwright *)` in allow. The rule lists are written to avoid overlaps entirely rather than depend on precedence; keep it that way when adding rules.
 - **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 490 rules are inert. Verify before relying on it.
 - **A denied push rejects the whole command.** The guard scans every segment of a compound command, so `make test && git push origin main` is denied in its entirety — the build does not run first. This is deliberate (a guard should fail closed), but it surprises people who expect only the push to be blocked. Run the work and the push as separate commands.
-- **Bypass mode skips the rules.** If you run with `--dangerously-skip-permissions` anyway, allow/ask/deny are ignored wholesale — only the hook still fires.
+- **Bypass mode skips the rules.** If you run with `--dangerously-skip-permissions` anyway, allow/ask/deny are ignored wholesale — only the hook still fires. `--permissive` is that state made persistent, and it removes the hook too, so nothing fires at all.
 
 ### Overriding the guard
 

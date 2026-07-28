@@ -108,7 +108,6 @@
       "Bash(prettier *)",
       "Bash(jest *)",
       "Bash(vitest *)",
-      "Bash(playwright *)",
       "Bash(biome *)",
       "Bash(esbuild *)",
       "Bash(vite *)",

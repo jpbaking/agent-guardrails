@@ -165,6 +165,19 @@ Note that `CLAUDE_PROTECTED_BRANCHES` only works when set in the **agent process
 
 Uninstall subtracts from the same `ALLOW`/`ASK`/`DENY` arrays the writers use, so a rule you add is removed automatically with no extra work — but only if you add it to those arrays rather than hard-coding it in a writer. Do not hard-code rules in writers. Also confirm `--uninstall` is a clean no-op on a config that never had it installed.
 
+**7. Permissive round-trips.** `--permissive` is the one path that does not merge, so it needs its own passes. Against a seeded config that has a top-level `approval_policy`, a `[projects."…"]` table with an `approval_policy` **inside** it, a foreign `PreToolUse` hook, and rules of the user's own:
+
+```bash
+./agent-guardrails.sh --project /tmp/sb --permissive --yes   # x3, must be idempotent
+./agent-guardrails.sh --project /tmp/sb --uninstall          # back to pristine
+./agent-guardrails.sh --project /tmp/sb --permissive --yes
+./agent-guardrails.sh --project /tmp/sb                      # normal install over permissive
+```
+
+Confirm: the `config.toml` block does not stack and no blank line accumulates per run; the displaced top-level key comes back with its original value on uninstall while the one **inside the table** was never touched; the foreign hook survives all of it; and after the normal install there is no `defaultMode`, no `Bash(*)`, no policy block, and no `[projects."<path>"]` trust entry left. That last one matters most — rules under a bypass switch are rules that do nothing.
+
+Two invariants the permissive path depends on. `TRUST_BEGIN` must **not** start with `TOML_BEGIN`, or reinstalling the policy block sweeps away trust blocks other projects put in the same global config. And `toml_filter`'s restore flag must be `0` whenever the policy block is staying put — un-commenting a displaced `approval_policy` while ours is still in the file produces a duplicate key, which is a TOML parse error, which is a Codex that will not start.
+
 ## Adding rules
 
 Edit the `ALLOW` / `ASK` / `DENY` arrays. Keep them grouped by toolchain with the existing comment headers, and keep entries alphabetical within a group where it doesn't fight the grouping.
@@ -179,6 +192,8 @@ This is not hypothetical. `Bash(go build *)`, `Bash(go test *)` and `Bash(go vet
 
 So: **when you remove or replace an entry, move its exact old text into the `RETIRED` array.** Both removers subtract `RETIRED` in addition to the live lists. Never delete anything from `RETIRED` — it only grows, and it is the only record that a rule was ever shipped.
 
+The same reasoning covers `PERMIT_ALLOW` / `PERMIT_AGY`: if you change a catch-all, the old text has to go into `RETIRED` too, or a config that went permissive under the old version keeps a `Bash(…)` wildcard through every future install.
+
 ### Classifying a new toolchain
 
 Ask where the damage lands, then pick the shape:
@@ -191,7 +206,7 @@ Ask where the damage lands, then pick the shape:
 | publishes an artifact or mutates credentials (`npm publish`, `gh secret`, `docker push`) | `deny` — an agent should not be able to do this at all |
 | fetches and executes remote code (`npx`, `gh extension install`, `cargo install`) | `ask` |
 
-Two hard rules. **Do not add `Bash(git push *)` to `ALLOW`** — that defeats the guard, which is the entire point of the project. And **do not add a bare shell** (`Bash(bash *)`, `Bash(sh *)`): `bash -c '<anything>'` makes every other rule in the file meaningless.
+Two hard rules. **Do not add `Bash(git push *)` to `ALLOW`** — that defeats the guard, which is the entire point of the project. And **do not add a bare shell** (`Bash(bash *)`, `Bash(sh *)`): `bash -c '<anything>'` makes every other rule in the file meaningless. Both of those live in `PERMIT_ALLOW` by way of `Bash(*)`, which is exactly why `--permissive` is a separate mode with a confirmation rather than a looser default.
 
 When you add a toolchain, update the README's allow/ask/deny tables and all seven rule counts, regenerate `enterprise/claude-managed-settings.json`, and run the shadow checker.
 

@@ -9,6 +9,14 @@
 #   ./agent-guardrails.sh --print --managed   # shape as an enterprise policy proposal
 #   ./agent-guardrails.sh --global --uninstall    # remove every rule and hook it added
 #   ./agent-guardrails.sh --project --uninstall   # same, for a project
+#   ./agent-guardrails.sh --global --permissive   # FULLY PERMISSIVE — no gate at all
+#
+# --permissive is the opposite of everything else here: it turns the guardrails
+# OFF rather than scoping them. Nothing is asked, nothing is denied, the push
+# guard is removed, and any deny rules already in your config are cleared. It is
+# --dangerously-skip-permissions / --dangerously-bypass-approvals-and-sandbox
+# written into the config files so you stop passing the flag. Only use it inside
+# a container or VM you can throw away. Add --yes to skip the confirmation.
 #
 # You pick the scope; the script handles the per-harness differences:
 #
@@ -24,9 +32,12 @@
 #   - agy has no permissionDecision hook protocol, so it gets rules but no guard.
 #     It also has no per-project settings file; project scope adds the path to
 #     trustedWorkspaces in its global settings instead.
+#   - Under --permissive, Codex is the one that actually needs config.toml
+#     rewritten (approval_policy/sandbox_mode), since it has no rules to widen.
 #
 # Existing entries are preserved and de-duplicated, never replaced. Every file
 # is backed up to <file>.bak before any change. Re-running is idempotent.
+# (--permissive is the exception: it clears ask/deny outright. See below.)
 
 set -euo pipefail
 
@@ -113,7 +124,7 @@ ALLOW=(
 
   # ---- typescript & js tooling ----
   "Bash(tsc *)" "Bash(tsx *)" "Bash(ts-node *)" "Bash(eslint *)"
-  "Bash(prettier *)" "Bash(jest *)" "Bash(vitest *)" "Bash(playwright *)"
+  "Bash(prettier *)" "Bash(jest *)" "Bash(vitest *)"   # playwright: see below
   "Bash(biome *)" "Bash(esbuild *)" "Bash(vite *)" "Bash(turbo *)"
   "Bash(deno *)"
 
@@ -548,6 +559,45 @@ RETIRED=(
   "Bash(terraform *)"
 )
 
+# ──────────────────────────────────────────────────────── fully permissive mode
+# --permissive writes these INSTEAD of ALLOW/ASK/DENY, and clears ask and deny
+# to empty. Not "allow a lot" — allow everything, gate nothing.
+#
+# Claude's real switch is permissions.defaultMode = "bypassPermissions", which
+# skips rule evaluation wholesale. The catch-all rules below are belt and braces
+# for the case where an enterprise managed-settings policy refuses defaultMode:
+# the rules still stand on their own if the mode is stripped.
+PERMIT_ALLOW=(
+  "Bash(*)" "Read(*)" "Edit(*)" "Write(*)" "Glob(*)" "Grep(*)"
+  "WebFetch(*)" "WebSearch(*)" "NotebookEdit(*)" "Task(*)"
+)
+
+# agy's own syntax. Its documented default is to ASK on command(*) — every shell
+# command — so the same pattern in allow is the exact inverse of that default.
+# Written out rather than run through to_agy(), which strips the bare "*".
+PERMIT_AGY=( "command(*)" "read_file(*)" "write_file(*)" )
+
+# Codex has no rules to widen, so permissive means its two policy knobs. These
+# are the config.toml equivalent of --dangerously-bypass-approvals-and-sandbox.
+PERMIT_CODEX_TOML=(
+  'approval_policy = "never"'
+  'sandbox_mode = "danger-full-access"'
+)
+
+# config.toml is TOML, not JSON, so it is edited by line with markers instead of
+# jq. Anything between these two lines belongs to this script and is replaced on
+# reinstall / removed on uninstall. Top-level keys we displace are commented out
+# with DISABLED_TAG rather than deleted, so uninstall can put them back.
+TOML_BEGIN="# >>> agent-guardrails permissive >>>"
+TOML_END="# <<< agent-guardrails permissive <<<"
+DISABLED_TAG="#agent-guardrails-disabled# "
+# Project trust gets its own marker, one block per path. Deliberately NOT
+# prefixed by TOML_BEGIN: reinstalling the policy block must not sweep away the
+# trust blocks that earlier --project runs left in the same global config.
+TRUST_BEGIN="# >>> agent-guardrails permissive trust: "
+# Prefix that matches every block this script writes, for uninstall.
+ANY_BEGIN="# >>> agent-guardrails"
+
 # ───────────────────────────────────────────────────────────────────── plumbing
 
 arr() { printf '%s\n' "$@" | jq -R . | jq -s .; }
@@ -576,6 +626,76 @@ ensure_json() {
   jq -e . "$1" >/dev/null || { echo "$1 is not valid JSON — fix it first" >&2; exit 1; }
 }
 
+# ── config.toml editing (Codex only) ─────────────────────────────────────────
+# TOML, so no jq. Everything this script writes lives between marker comments
+# and every key it displaces is commented out with DISABLED_TAG, which makes
+# both re-install and uninstall exact line operations rather than guesswork.
+
+# Drop the blank lines left where a block used to be, at the top and bottom of
+# the file, so repeated install/uninstall cycles do not drift the file downward.
+trim_blanks() {
+  awk 'NF == 0 { if (seen) blanks++; next }
+       { while (blanks-- > 0) print ""; blanks = 0; seen = 1; print }'
+}
+
+# Print $1 with every guardrails block whose opening marker starts with $2
+# removed. Blocks never nest, so any closing marker ends the block that is open.
+# $3=1 also un-comments the keys we displaced; pass 0 when the policy block is
+# staying put, or the restored key becomes a duplicate of the one inside it.
+toml_filter() { # $1 = file, $2 = opening-marker prefix, $3 = restore displaced keys
+  awk -v b="$2" -v tag="$DISABLED_TAG" -v restore="$3" '
+    index($0, b) == 1 { skip = 1; next }
+    skip && index($0, "# <<< agent-guardrails") == 1 { skip = 0; next }
+    skip { next }
+    restore == 1 && index($0, tag) == 1 { print substr($0, length(tag) + 1); next }
+    { print }
+  ' "$1"
+}
+
+# Write the permissive policy block into a config.toml.
+toml_permit() { # $1 = config.toml
+  local f=$1 body
+  mkdir -p "$(dirname "$f")"
+  [ -f "$f" ] || : > "$f"
+  backup "$f"
+  # Displace any top-level approval_policy / sandbox_mode: TOML rejects a
+  # duplicate key and ours has to win. Only above the first [table] — the same
+  # key under [projects."x"] is a different key and is left alone.
+  body=$(toml_filter "$f.bak" "$TOML_BEGIN" 1 | awk -v tag="$DISABLED_TAG" '
+    /^[[:space:]]*\[/ { intable = 1 }
+    !intable && /^[[:space:]]*(approval_policy|sandbox_mode)[[:space:]]*=/ { print tag $0; next }
+    { print }' | trim_blanks)
+  # Prepend, because a top-level key must come before the first table.
+  { printf '%s\n' "$TOML_BEGIN" "${PERMIT_CODEX_TOML[@]}" "$TOML_END" ""
+    printf '%s\n' "$body"; } > "$f"
+}
+
+# Trust a project path in the GLOBAL codex config — trust_level lives in the
+# [projects.*] table there, and there is nowhere project-local to put it.
+toml_trust_project() { # $1 = ~/.codex/config.toml, $2 = project path
+  local f=$1 p=$2
+  mkdir -p "$(dirname "$f")"
+  [ -f "$f" ] || : > "$f"
+  if grep -qF "[projects.\"$p\"]" "$f"; then
+    note "        [projects.\"$p\"] already in $f — left as is"
+    return
+  fi
+  backup "$f"
+  printf '\n%s\n[projects."%s"]\ntrust_level = "trusted"\n%s\n' \
+    "$TRUST_BEGIN$p" "$p" "$TOML_END" >> "$f"
+  note "        + [projects.\"$p\"] trust_level = trusted -> $f"
+}
+
+# Undo whatever toml_permit / toml_trust_project put in $1. Returns 1 (and
+# touches nothing) when the file holds nothing of ours.
+toml_unpermit() { # $1 = config.toml, $2 = opening-marker prefix, $3 = restore displaced keys
+  local f=$1 pre=$2 restore=${3:-1}
+  [ -f "$f" ] || return 1
+  grep -qF "$pre" "$f" || { [ "$restore" -eq 1 ] && grep -qF "$DISABLED_TAG" "$f"; } || return 1
+  backup "$f"
+  toml_filter "$f.bak" "$pre" "$restore" | trim_blanks > "$f"
+}
+
 # ── removers ──────────────────────────────────────────────────────────────────
 # Uninstall works by SUBTRACTING exactly the rules this script knows it adds,
 # not by restoring <file>.bak. The .bak is single-level and is overwritten on
@@ -591,7 +711,7 @@ unwrite_claude() { # $1 = settings.json path
   jq -e . "$f" >/dev/null || { echo "$f is not valid JSON" >&2; exit 1; }
   backup "$f"
   jq \
-    --argjson allow "$(arr "${ALLOW[@]}")" \
+    --argjson allow "$(arr "${ALLOW[@]}" "${PERMIT_ALLOW[@]}")" \
     --argjson ask   "$(arr "${ASK[@]}")" \
     --argjson deny  "$(arr "${DENY[@]}")" \
     --argjson retired "$(arr "${RETIRED[@]}")" '
@@ -599,6 +719,8 @@ unwrite_claude() { # $1 = settings.json path
       .permissions.allow = ((.permissions.allow // []) - $allow - $retired)
       | .permissions.ask = ((.permissions.ask // []) - $ask - $retired)
       | .permissions.deny = ((.permissions.deny // []) - $deny - $retired)
+      | (if .permissions.defaultMode == "bypassPermissions"
+         then del(.permissions.defaultMode) else . end)
       | .permissions |= with_entries(select(.value != []))
       | if (.permissions | length) == 0 then del(.permissions) else . end
     else . end
@@ -615,6 +737,11 @@ unwrite_claude() { # $1 = settings.json path
 
 unwrite_codex() { # $1 = .codex dir
   local f="$1/hooks.json"
+  # Permissive artifacts live in config.toml, which may exist even when
+  # hooks.json does not — clean it first and independently.
+  if toml_unpermit "$1/config.toml" "$ANY_BEGIN" 1; then
+    note "codex   cleaned $1/config.toml (permissive policy + trust blocks)"
+  fi
   [ -f "$f" ] || { note "codex   skipped ($f not found)"; return; }
   jq -e . "$f" >/dev/null || { echo "$f is not valid JSON" >&2; exit 1; }
   backup "$f"
@@ -636,7 +763,7 @@ unwrite_agy() { # $1 = settings.json path
   jq -e . "$f" >/dev/null || { echo "$f is not valid JSON" >&2; exit 1; }
   backup "$f"
   jq \
-    --argjson allow "$(to_agy "${ALLOW[@]}" | jq -R . | jq -s .)" \
+    --argjson allow "$( { to_agy "${ALLOW[@]}"; printf '%s\n' "${PERMIT_AGY[@]}"; } | jq -R . | jq -s .)" \
     --argjson ask   "$(to_agy "${ASK[@]}"   | jq -R . | jq -s .)" \
     --argjson deny  "$(to_agy "${DENY[@]}"  | jq -R . | jq -s .)" \
     --argjson retired "$(to_agy "${RETIRED[@]}" | jq -R . | jq -s .)" '
@@ -652,19 +779,91 @@ unwrite_agy() { # $1 = settings.json path
   note "        trustedWorkspaces left alone — remove paths yourself if you want"
 }
 
+# ── permissive writers ────────────────────────────────────────────────────────
+# These do NOT merge. Merging is what the normal path does; here the whole point
+# is that nothing survives to gate a command, so ask and deny are set to empty
+# and the push guard is stripped out. Rules of your own in those lists go too —
+# that is the mode, not an accident. <file>.bak is your one way back.
+
+permit_claude() { # $1 = settings.json path
+  local f=$1
+  ensure_json "$f" '{}'
+  backup "$f"
+  jq --argjson allow "$(arr "${PERMIT_ALLOW[@]}")" '
+    .permissions //= {}
+    | .permissions.allow = $allow
+    | .permissions.ask = []
+    | .permissions.deny = []
+    | .permissions.defaultMode = "bypassPermissions"
+    | if .hooks.PreToolUse then
+        .hooks.PreToolUse |= (
+          map(.hooks //= [] | .hooks |= map(select(.command | test("git-push-guard\\.sh") | not)))
+          | map(select(.hooks | length > 0)))
+        | if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end
+        | if (.hooks | length) == 0 then del(.hooks) else . end
+      else . end
+  ' "$f.bak" > "$f"
+  note "claude  $f  (bypassPermissions, ask/deny cleared, guard removed)"
+}
+
+permit_codex() { # $1 = .codex dir, $2 = optional project path to trust
+  local d=$1 p=${2:-} f="$1/hooks.json"
+  toml_permit "$d/config.toml"
+  note "codex   $d/config.toml  (approval_policy=never, sandbox_mode=danger-full-access)"
+  [ -n "$p" ] && toml_trust_project "${HOME}/.codex/config.toml" "$p"
+  # The guard is the only gate Codex has, so permissive means taking it out.
+  if [ -f "$f" ] && jq -e . "$f" >/dev/null 2>&1; then
+    backup "$f"
+    jq '
+      if .hooks.PreToolUse then
+        .hooks.PreToolUse |= (
+          map(.hooks //= [] | .hooks |= map(select(.command | test("git-push-guard\\.sh") | not)))
+          | map(select(.hooks | length > 0)))
+        | if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end
+      else . end
+    ' "$f.bak" > "$f"
+    note "        guard removed from $f"
+  fi
+}
+
+permit_agy() { # $1 = settings.json path, $2 = optional workspace to trust
+  local f=$1 ws=${2:-}
+  [ -f "$f" ] || { note "agy     skipped ($f not found — run agy once first)"; return; }
+  jq -e . "$f" >/dev/null || { echo "$f is not valid JSON" >&2; exit 1; }
+  backup "$f"
+  jq --argjson allow "$(printf '%s\n' "${PERMIT_AGY[@]}" | jq -R . | jq -s .)" \
+     --arg ws "$ws" '
+    .permissions //= {}
+    | .permissions.allow = $allow
+    | .permissions.ask = []
+    | .permissions.deny = []
+    | .allowNonWorkspaceAccess = true
+    | if $ws != "" then .trustedWorkspaces = ((.trustedWorkspaces // []) + [$ws] | unique)
+      else . end
+  ' "$f.bak" > "$f"
+  note "agy     $f  (command(*) allowed, ask/deny cleared, allowNonWorkspaceAccess)"
+  [ -n "$ws" ] && note "        + trustedWorkspaces += $ws"
+  return 0
+}
+
 # ── writers ───────────────────────────────────────────────────────────────────
 
 write_claude() { # $1 = settings.json path
   local f=$1
   ensure_json "$f" '{}'
   backup "$f"
+  # $permit is subtracted for the same reason as $retired: installing over a
+  # previous --permissive run has to take the catch-alls and bypassPermissions
+  # back out, or the rules below are written into a config that ignores them.
   jq \
     --argjson allow "$(arr "${ALLOW[@]}")" \
     --argjson ask   "$(arr "${ASK[@]}")" \
     --argjson deny  "$(arr "${DENY[@]}")" \
-    --argjson retired "$(arr "${RETIRED[@]}")" \
+    --argjson retired "$(arr "${RETIRED[@]}" "${PERMIT_ALLOW[@]}")" \
     --arg cmd "bash '$GUARD'" --argjson hook "$DO_HOOK" '
     .permissions //= {}
+    | (if .permissions.defaultMode == "bypassPermissions"
+       then del(.permissions.defaultMode) else . end)
     | .permissions.allow = (((.permissions.allow // []) - $retired) + $allow | unique)
     | .permissions.ask   = (((.permissions.ask   // []) - $retired) + $ask   | unique)
     | .permissions.deny  = (((.permissions.deny  // []) - $retired) + $deny  | unique)
@@ -683,6 +882,12 @@ write_claude() { # $1 = settings.json path
 
 write_codex() { # $1 = .codex dir
   local d=$1 f="$1/hooks.json" toml="$1/config.toml"
+  # Installing over a previous --permissive run: put approval_policy and
+  # sandbox_mode back before adding the guard, or the guard is the only thing
+  # standing between the agent and full access.
+  if toml_unpermit "$toml" "$TOML_BEGIN" 1; then
+    note "codex   reverted permissive policy in $toml"
+  fi
   [ "$DO_HOOK" -eq 1 ] || { note "codex   skipped (--no-hook; Codex gets no rules, only the guard)"; return; }
   ensure_json "$f" '{"hooks":{}}'
   backup "$f"
@@ -716,7 +921,7 @@ write_agy() { # $1 = settings.json path, $2 = optional workspace to trust
     --argjson allow "$(to_agy "${ALLOW[@]}" | jq -R . | jq -s .)" \
     --argjson ask   "$(to_agy "${ASK[@]}"   | jq -R . | jq -s .)" \
     --argjson deny  "$(to_agy "${DENY[@]}"  | jq -R . | jq -s .)" \
-    --argjson retired "$(to_agy "${RETIRED[@]}" | jq -R . | jq -s .)" \
+    --argjson retired "$( { to_agy "${RETIRED[@]}"; printf '%s\n' "${PERMIT_AGY[@]}"; } | jq -R . | jq -s .)" \
     --arg ws "$ws" '
     .permissions //= {}
     | .permissions.allow = (((.permissions.allow // []) - $retired) + $allow | unique)
@@ -732,9 +937,11 @@ write_agy() { # $1 = settings.json path, $2 = optional workspace to trust
 
 # ───────────────────────────────────────────────────────────────────── dispatch
 
-usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+# The whole header block is the help text, so print it up to the first line
+# that is not a comment rather than a hardcoded line count.
+usage() { awk 'NR>1 && !/^#/ {exit} NR>1 {sub(/^# ?/, ""); print}' "$0"; exit "${1:-0}"; }
 
-SCOPE=""; PROJ=""; DO_HOOK=1; MANAGED=0; UNINSTALL=0
+SCOPE=""; PROJ=""; DO_HOOK=1; MANAGED=0; UNINSTALL=0; PERMISSIVE=0; ASSUME_YES=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --global|--user)      SCOPE="global" ;;
@@ -744,6 +951,8 @@ while [ $# -gt 0 ]; do
     --managed)            MANAGED=1 ;;
     --no-hook)            DO_HOOK=0 ;;
     --uninstall)          UNINSTALL=1 ;;
+    --permissive)         PERMISSIVE=1 ;;
+    -y|--yes)             ASSUME_YES=1 ;;
     -h|--help)            usage 0 ;;
     *) echo "unknown option: $1" >&2; usage 1 ;;
   esac
@@ -752,6 +961,29 @@ done
 
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 [ -n "$SCOPE" ] || usage 1
+
+if [ "$PERMISSIVE" -eq 1 ]; then
+  # --managed pins policy centrally so users cannot loosen it; --permissive is
+  # loosening it as far as it goes. Nothing sensible to emit for both.
+  [ "$MANAGED" -eq 1 ] && { echo "--managed and --permissive are contradictory" >&2; exit 1; }
+  # There is no guard in permissive mode, so --no-hook is already implied.
+  DO_HOOK=0
+fi
+
+if [ "$SCOPE" = "print" ] && [ "$PERMISSIVE" -eq 1 ]; then
+  jq -n \
+    --argjson allow "$(arr "${PERMIT_ALLOW[@]}")" \
+    --argjson agy_allow "$(printf '%s\n' "${PERMIT_AGY[@]}" | jq -R . | jq -s .)" \
+    --arg toml "$(printf '%s\n' "${PERMIT_CODEX_TOML[@]}")" '
+    {claude: {permissions: {allow: $allow, ask: [], deny: [],
+                            defaultMode: "bypassPermissions"}},
+     agy: {permissions: {allow: $agy_allow, ask: [], deny: []},
+           allowNonWorkspaceAccess: true},
+     codex: ("config.toml: " + ($toml | gsub("\n"; "; "))
+             + " (+ [projects.\"<path>\"] trust_level = trusted for --project)"),
+     guard: "removed — permissive mode installs no push guard"}'
+  exit 0
+fi
 
 if [ "$SCOPE" = "print" ]; then
   jq -n \
@@ -779,10 +1011,58 @@ if [ "$UNINSTALL" -eq 1 ]; then
     unwrite_claude "$PROJ/.claude/settings.json"
     unwrite_codex  "$PROJ/.codex"
     unwrite_agy    "${HOME}/.gemini/antigravity-cli/settings.json"
+    # A --project --permissive run trusts the path in the GLOBAL codex config,
+    # because that is the only place [projects.*] exists. Take just that block
+    # back out; leave the rest of the global config alone.
+    if toml_unpermit "${HOME}/.codex/config.toml" "$TRUST_BEGIN$PROJ" 0; then
+      note "codex   removed [projects.\"$PROJ\"] trust block from ${HOME}/.codex/config.toml"
+    fi
   fi
   echo "guard script left at $GUARD"
   echo "  remove it yourself if nothing else uses it:  rm '$GUARD'"
   echo "backups written alongside each file as <file>.bak"
+  exit 0
+fi
+
+if [ "$PERMISSIVE" -eq 1 ]; then
+  [ "$SCOPE" = "project" ] && PROJ=$(cd "${PROJ:-$PWD}" && pwd)
+  cat >&2 <<EOF
+
+  ⚠  FULLY PERMISSIVE — this REMOVES the guardrails, it does not scope them.
+
+     target        $([ "$SCOPE" = "global" ] && echo "every project on this machine (global)" || echo "$PROJ")
+     allow         everything: Bash(*), Read(*), Write(*), Edit(*), …
+     ask / deny    cleared to empty, including any rules you added yourself
+     push guard    removed — force-pushing to main is no longer stopped
+     codex         approval_policy=never, sandbox_mode=danger-full-access
+
+     Backups go to <file>.bak, which is single-level and is overwritten on the
+     next run. Only do this in a container or VM you can throw away.
+
+EOF
+  if [ "$ASSUME_YES" -eq 0 ]; then
+    [ -t 0 ] || { echo "refusing to go permissive non-interactively without --yes" >&2; exit 1; }
+    printf '  type "yes" to continue: ' >&2
+    read -r reply
+    [ "$reply" = "yes" ] || { echo "  aborted — nothing was changed" >&2; exit 1; }
+    echo >&2
+  fi
+
+  if [ "$SCOPE" = "global" ]; then
+    echo "scope: global (user-level), FULLY PERMISSIVE"
+    permit_claude "${HOME}/.claude/settings.json"
+    permit_codex  "${HOME}/.codex"
+    permit_agy    "${HOME}/.gemini/antigravity-cli/settings.json"
+  else
+    echo "scope: project ($PROJ), FULLY PERMISSIVE"
+    permit_claude "$PROJ/.claude/settings.json"
+    permit_codex  "$PROJ/.codex" "$PROJ"
+    permit_agy    "${HOME}/.gemini/antigravity-cli/settings.json" "$PROJ"
+  fi
+
+  echo "allow=everything ask=0 deny=0  guard=none"
+  echo "backups written alongside each file as <file>.bak"
+  echo "undo:  $0 --${SCOPE} $([ "$SCOPE" = "project" ] && echo "'$PROJ' ")--uninstall   then re-run without --permissive"
   exit 0
 fi
 
@@ -801,6 +1081,11 @@ else
   echo "scope: project ($PROJ)"
   write_claude "$PROJ/.claude/settings.json"
   write_codex  "$PROJ/.codex"
+  # Drop the trust block a previous --permissive run put in the global codex
+  # config for this path; trusting it there would outrank what we just wrote.
+  if toml_unpermit "${HOME}/.codex/config.toml" "$TRUST_BEGIN$PROJ" 0; then
+    note "        removed permissive trust block for $PROJ from ${HOME}/.codex/config.toml"
+  fi
   write_agy    "${HOME}/.gemini/antigravity-cli/settings.json" "$PROJ"
 fi
 
