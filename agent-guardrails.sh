@@ -820,8 +820,39 @@ permit_claude() { # $1 = settings.json path
   note "claude  $f  (bypassPermissions, ask/deny cleared, guard removed)"
 }
 
+# Enterprise policy file. Anything not listed in it cannot be selected — not by
+# config.toml, not by -c, not by a CLI flag.
+CODEX_REQUIREMENTS=${CODEX_REQUIREMENTS:-/etc/codex/requirements.toml}
+
+# 0 = an enterprise policy would reject the values permissive mode writes.
+#
+# This matters more than it looks. Codex does not error on a rejected value, it
+# falls back to the most restrictive ALLOWED one — measured: asking for
+# never/danger-full-access under a policy allowing [untrusted, on-request,
+# on-failure] resolves to UnlessTrusted, which is stricter than the on-request
+# such a user almost certainly had. And permissive mode comments their old value
+# out on the way past. So writing it would leave them worse off than not running
+# the tool at all, which is the one outcome worth refusing outright.
+codex_requirements_reject() {
+  local f=$CODEX_REQUIREMENTS line
+  [ -f "$f" ] || return 1
+  line=$(grep -E '^[[:space:]]*allowed_sandbox_modes' "$f" || true)
+  [ -n "$line" ] && ! printf '%s' "$line" | grep -q 'danger-full-access' && return 0
+  line=$(grep -E '^[[:space:]]*allowed_approval_policies' "$f" || true)
+  [ -n "$line" ] && ! printf '%s' "$line" | grep -q '"never"' && return 0
+  return 1
+}
+
 permit_codex() { # $1 = .codex dir, $2 = optional project path to trust
   local d=$1 p=${2:-} f="$1/hooks.json"
+  if codex_requirements_reject; then
+    note "codex   SKIPPED — $CODEX_REQUIREMENTS forbids these values."
+    note "        Codex clamps a rejected value to the most restrictive allowed"
+    note "        one, so writing ours would displace a working setting and leave"
+    note "        you with MORE prompting, not less. Config left untouched, and"
+    note "        the guard left in place — it still costs you nothing."
+    return 0
+  fi
   toml_permit "$d/config.toml"
   note "codex   $d/config.toml  (approval_policy=never, sandbox_mode=danger-full-access)"
   [ -n "$p" ] && toml_trust_project "${HOME}/.codex/config.toml" "$p"
@@ -1048,7 +1079,9 @@ if [ "$PERMISSIVE" -eq 1 ]; then
      allow         everything: Bash(*), Read(*), Write(*), Edit(*), …
      ask / deny    cleared to empty, including any rules you added yourself
      push guard    removed — force-pushing to main is no longer stopped
-     codex         approval_policy=never, sandbox_mode=danger-full-access
+     codex         $(codex_requirements_reject \
+                     && echo "SKIPPED — $CODEX_REQUIREMENTS forbids it" \
+                     || echo "approval_policy=never, sandbox_mode=danger-full-access")
 
      Backups go to <file>.bak, which is single-level and is overwritten on the
      next run. Only do this in a container or VM you can throw away.

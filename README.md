@@ -235,6 +235,28 @@ Trust does not inherit: a subdirectory of a trusted parent is still untrusted. I
 
 Global scope is unaffected — `~/.claude/settings.json` is not workspace-scoped. (Asserted from the mechanism, not measured; the failure mode above was only ever observed on project files.)
 
+#### If your admins disabled Codex full access, permissive skips Codex entirely
+
+Claude survives bypass being disabled because the catch-all rules are a second, independent mechanism. **Codex has no second mechanism.** It has no allowlist; `approval_policy` and `sandbox_mode` are its only levers, and those are exactly the two keys `/etc/codex/requirements.toml` pins. There is nothing to fall back to.
+
+Worse, Codex does not reject a forbidden value — it **falls back to the most restrictive allowed one**. Measured against the policy this repo ships in `enterprise/`:
+
+| config.toml asks for | Codex resolves to |
+|---|---|
+| `approval_policy = "never"` | `UnlessTrusted` — *stricter than the `on-request` you had* |
+| `sandbox_mode = "danger-full-access"` | restricted filesystem, restricted network |
+
+```
+Configured value for `approval_policy` is disallowed by requirements;
+falling back to required value UnlessTrusted. Details: invalid value for
+`approval_policy`: `Never` is not in the allowed set [UnlessTrusted,
+OnRequest, OnRequest] (set by /etc/codex/requirements.toml)
+```
+
+Since permissive mode comments your existing value out on the way past, running it under such a policy would leave you **more** gated than before — the one outcome worse than doing nothing. So it doesn't: when `/etc/codex/requirements.toml` forbids either value, `--permissive` skips Codex, leaves the config untouched, and leaves the push guard in place. It says so rather than reporting a success it didn't achieve.
+
+Claude and agy are still made permissive in that case — the policy constrains Codex only. Set `CODEX_REQUIREMENTS` to point the check at a different file if you need to test it.
+
 ### Uninstalling
 
 ```bash
@@ -281,6 +303,8 @@ These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](
 - `codex-requirements.toml` → `/etc/codex/requirements.toml`, pinning `allowed_approval_policies` and `allowed_sandbox_modes`
 
 `./agent-guardrails.sh --print --managed` prints the same content for pasting into a ticket.
+
+These hold against this tool, not just against users: deploy `codex-requirements.toml` and `--permissive` [refuses to touch Codex](#if-your-admins-disabled-codex-full-access-permissive-skips-codex-entirely) rather than writing settings that would be clamped. A policy that says no should not be answerable by the thing it is saying no to.
 
 ## Honest limitations
 
