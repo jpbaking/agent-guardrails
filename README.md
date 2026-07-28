@@ -257,6 +257,28 @@ Since permissive mode comments your existing value out on the way past, running 
 
 Claude and agy are still made permissive in that case — the policy constrains Codex only. Set `CODEX_REQUIREMENTS` to point the check at a different file if you need to test it.
 
+"Skips" means nothing is written for Codex: no policy block, your existing `approval_policy` and `sandbox_mode` not displaced, no `trust_level` entry, and the push guard left in `hooks.json` rather than removed. It skips because writing would leave you worse off — not because the settings are unwanted.
+
+#### What you *can* have under that policy
+
+Most of what you wanted, as it turns out. Measured with `codex exec` under `approval_policy = "untrusted"` + `sandbox_mode = "workspace-write"` — the strictest pair such a policy still permits — using `-c` overrides only, no bypass flag:
+
+| command writes to | project trusted | result |
+|---|---|---|
+| inside the workspace | no | **runs, no prompt** |
+| inside the workspace | yes | **runs, no prompt** |
+| outside the workspace | no | blocked — *"target path is on a read-only filesystem"* |
+| outside the workspace | yes | blocked — trust does not lift it |
+
+So the strictest allowed setting **already runs your ordinary work unprompted**. Everything inside the project — and `/tmp` — executes with no approval at all. What you give up is writes outside the workspace and network escalation.
+
+Two things worth knowing:
+
+- **The sandbox is the binding constraint, not the approval policy.** `trust_level` looked like a loophole, since it is the one relevant key a requirements file cannot pin — `allowed_*` covers approval policies, sandbox modes, reviewers, permission profiles and web-search modes, but not trust. It isn't one: trust governs project-local config loading and approval prompting, not what the sandbox permits.
+- **Check `sandbox_mode` is `workspace-write` and not `read-only`.** That one setting is your ceiling, it is within policy, and it is the whole difference between a Codex that works and one that cannot write at all.
+
+Limit on the evidence: `exec` is non-interactive, so it cannot distinguish "would have prompted you" from "refused" — there is nobody to approve. In an interactive session `approval_policy` decides whether an escalation prompts; the table above establishes where the sandbox boundary sits, not what the prompt would have said.
+
 ### Uninstalling
 
 ```bash
