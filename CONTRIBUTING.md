@@ -81,6 +81,8 @@ PreToolUse hook returned permissionDecision:deny without a non-empty permissionD
 
 A deny **must** carry a non-empty reason. The shell tool's matcher is `shell`, not `Bash`, and its `tool_input.command` is an argv array (`["bash","-lc","…"]`), not a string. Hooks require `[features] hooks = true` in `config.toml`. Codex has no allowlist mechanism — don't add one.
 
+**Project-local Codex config only loads for a trusted directory.** A `<project>/.codex/config.toml` is silently ignored unless the global config has `[projects."<path>"] trust_level = "trusted"`. The binary says so in its own trust prompt — *"Trusting the directory allows project-local config, hooks, and exec policies to load"* — and it measures out as a clean 2×2 (see the README). This is why `--project --permissive` writes a trust entry alongside the policy block. **Anything project-scoped you add for Codex inherits this**: a file that parses, applies nothing, and reports no error is the worst failure shape this repo can ship. Note also `Ignored unsupported project-local config keys in …` — project-local config honours only a subset of keys, so verify a new one actually resolves rather than assuming parity with the user-level file.
+
 **agy** — has `permissions.allow` / `.ask` / `.deny` in `~/.gemini/antigravity-cli/settings.json`, with rule syntax `command(…)`, `read_file(…)`, `write_file(…)`, `unsandboxed(…)`. It has no `permissionDecision`, `hookSpecificOutput`, or `hookEventName` anywhere in the binary, so hooks cannot gate permissions. It has no per-project settings file; project scope adds to `trustedWorkspaces`.
 
 **Claude Code** — the permissive one. Full `allow`/`ask`/`deny` from a `PreToolUse` hook via `hookSpecificOutput`, matcher `Bash`, `tool_input.command` is a string.
@@ -98,6 +100,17 @@ A=$(command -v agy)
 strings "$A" | grep -oE '(command|read_file|write_file|unsandboxed)\([^)]{0,30}\)' | sort -u
 strings "$A" | grep -oE '"(allow|deny|ask|permissions|hooks)"' | sort -u
 ```
+
+Strings tell you what a binary *contains*, not what it *does*. For anything about resolved configuration, measure it: `codex doctor --json` reports the policy Codex actually landed on, so point a scratch `CODEX_HOME` at a fixture and read it back.
+
+```bash
+export CODEX_HOME=/tmp/cxfix/home     # user-level config with known values
+cd /tmp/cxfix/proj && codex doctor --json \
+  | jq -r '.checks["sandbox.helpers"].details'
+# -> {"approval policy":"Never","filesystem sandbox":"unrestricted", …}
+```
+
+Vary one thing at a time against a baseline you can see change — a probe that never fails is a probe that proves nothing. That is how the trust dependency above was found: the project-local file looked like it worked until the untrusted row was run. Note the limit: `doctor` shows what Codex resolves, not what a live authenticated session does with it.
 
 If a constraint changed, update the code **and** the capability table in `README.md` — including its `verified against` column and the **Last verified** date beneath it. A stale date is a warning to readers; a fresh date on unverified claims is a lie to them. Only bump the date for versions you actually ran the commands against.
 

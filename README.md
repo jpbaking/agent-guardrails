@@ -164,6 +164,25 @@ Use it in a container or a VM you can throw away. If your reason for wanting it 
 
 Both `--uninstall` and a plain re-install undo it: installing normally over a permissive install strips `defaultMode`, the catch-all rules, the `config.toml` block and the trust entry before writing the real rules back, so you never end up with rules that a bypass switch is quietly ignoring.
 
+#### Why the Codex side writes a trust entry
+
+Because without it, project-scope permissive is a silent no-op. Codex only reads a project-local `.codex/config.toml` **when the directory is trusted** — its own trust prompt says so: *"Trusting the directory allows project-local config, hooks, and exec policies to load."*
+
+Measured with `codex doctor --json`, which reports the resolved policy, against a scratch `CODEX_HOME` whose user-level config said `on-request` / `workspace-write`:
+
+| directory trust | project-local `.codex/config.toml` | resolved policy |
+|---|---|---|
+| trusted | present | **approval=Never, fs=unrestricted** |
+| trusted | absent | approval=OnRequest, fs=restricted |
+| untrusted | **present** | approval=OnRequest, fs=restricted — **file ignored** |
+| untrusted | absent | approval=OnRequest, fs=restricted |
+
+Row three is the trap: the file is there, it parses, and nothing happens. So `--project --permissive` writes `[projects."<path>"] trust_level = "trusted"` into the *global* config alongside it, and `--uninstall` takes that entry back out.
+
+Global scope has no such dependency — user-level `config.toml` resolves to `approval=Never, fs=unrestricted` in an untrusted directory too.
+
+Two limits on that evidence. `doctor` proves Codex **resolves** the settings, not that a live authenticated session then runs without prompting. And the binary carries the string `Ignored unsupported project-local config keys in …`, so project-local config honours only a subset of keys — `approval_policy` and `sandbox_mode` are demonstrably in it, anything added there later may not be.
+
 ### Uninstalling
 
 ```bash
@@ -191,9 +210,11 @@ This is the part other tools gloss over. Each CLI's capabilities were determined
 | **Codex** | **none** — no allowlist mechanism exists | **deny only** | `0.145.0` |
 | **agy** | 490 rules, `command(git commit)` | **none** | `1.1.7` |
 
-> **Last verified: 2026-07-28.** These CLIs ship fast — agy moved from `1.1.6` to `1.1.7` during a single afternoon of writing this. If the date above is old, treat the table as a starting point rather than fact.
+> **Last verified: 2026-07-29.** These CLIs ship fast — agy moved from `1.1.6` to `1.1.7` during a single afternoon of writing this. If the date above is old, treat the table as a starting point rather than fact.
 
 **Codex** has no per-command allowlist at all. Its gating is `approval_policy` × `sandbox_mode` × `[projects.*] trust_level`. And its hook engine rejects anything but a denial — the binary literally carries the string `PreToolUse hook returned unsupported permissionDecision:allow`. So Codex gets the guard in `--deny-only` mode and no rules. That composes well: if your Codex is already on a trusted project with full access, the guard carves protected branches back out.
+
+The third term in that product is not decoration. A project-local `.codex/config.toml` is read **only when the directory is trusted**, which is why `--project --permissive` writes a `trust_level` entry as well — [measured, with the 2×2](#why-the-codex-side-writes-a-trust-entry). Anything project-scoped you add for Codex later inherits that dependency.
 
 **agy** has the allowlist (its own syntax: `command(…)`, `read_file(…)`, `write_file(…)`) but no `permissionDecision` protocol in its hooks, so the guard can't run there. Worth knowing: agy asks on `command(*)` by default — *every* shell command — so the allowlist is the whole win there.
 
