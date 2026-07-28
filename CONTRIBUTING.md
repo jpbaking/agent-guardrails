@@ -122,7 +122,7 @@ Vary one thing at a time against a baseline you can see change — a probe that 
 
 Claude Code and agy have no `doctor`, so the only honest probe is a live session — measured by **side effect, not by prose**. Give the CLI a baseline config that explicitly denies a marker command, ask it to run that command in print mode, then test for the file. Present means the tool call executed; there is nothing to interpret and no dependence on the model's phrasing.
 
-**Do not pass a bypass flag.** `--dangerously-skip-permissions` makes every condition pass and the test worthless. If a standing convention on your machine adds one — a shell alias, a delegate profile — call the binary by absolute path so it cannot apply.
+**Do not pass a bypass flag.** `--dangerously-skip-permissions` makes every condition pass and the test worthless. If something on your machine adds one behind your back — a shell alias, a wrapper script, a launcher config — call the binary by absolute path so it cannot apply.
 
 > **agy has no per-project settings, so a live agy test *always* mutates the global file.** There is no scope you can point it at to stay clear. Snapshot `~/.gemini/antigravity-cli/settings.json` somewhere outside the test tree first and restore it in a `trap`. Do not rely on `<file>.bak` — the writers overwrite it, so two runs destroy the original. Setting `HOME` does not save you either: agy's OAuth token lives in that same directory, so an isolated `HOME` is an unauthenticated one.
 >
@@ -132,7 +132,7 @@ Three confounds cost three runs when this was first done. All produce a plausibl
 
 - **Untrusted workspace.** Claude discarded every allow rule and said so. Trust the test directory explicitly (`projects["<path>"].hasTrustDialogAccepted` in `~/.claude.json`) — surgically, add-key/delete-key, because that file is live and your own session writes to it. A wholesale snapshot restore can clobber concurrent changes.
 - **A `*` in the test directory name.** The Bash tool flagged it as a glob and refused before permissions were consulted. Keep fixture paths inert; do not name a directory after the rule it is testing.
-- **The `CROSS_CLI_ROLE` handshake preamble.** A delegate correctly refused it as untrusted control metadata in a user turn, so no tool call was ever attempted. Drop it for instrument tests — these are not delegations.
+- **A metadata preamble on the prompt.** If your harness prefixes prompts with anything that looks like role or system metadata, the agent may correctly refuse it as injected control content in a user turn — and then no tool call is attempted at all. Keep instrument-test prompts bare.
 
 If a constraint changed, update the code **and** the capability table in `README.md` — including its `verified against` column and the **Last verified** date beneath it. A stale date is a warning to readers; a fresh date on unverified claims is a lie to them. Only bump the date for versions you actually ran the commands against.
 
