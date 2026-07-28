@@ -87,6 +87,8 @@ A deny **must** carry a non-empty reason. The shell tool's matcher is `shell`, n
 
 **Claude Code** — the permissive one. Full `allow`/`ask`/`deny` from a `PreToolUse` hook via `hookSpecificOutput`, matcher `Bash`, `tool_input.command` is a string.
 
+**Claude discards project-level rules in an untrusted workspace**, printing `Ignoring N permissions.allow entries from .claude/settings.json: this workspace has not been trusted`. Trust does not inherit from a parent directory, and `permissions.defaultMode` is *not* subject to it — only the rules are. Both harnesses therefore gate project-scoped config on trust (see the Codex note above), by different mechanisms and with different escape hatches. `--project` warns and stops there: writing `hasTrustDialogAccepted` into `~/.claude.json` would suppress a security prompt on the user's behalf. Do not "fix" the warning by making it automatic.
+
 ### Re-verifying after a CLI update
 
 Constraints change between versions. To re-check:
@@ -121,6 +123,12 @@ Claude Code and agy have no `doctor`, so the only honest probe is a live session
 > **agy has no per-project settings, so a live agy test *always* mutates the global file.** There is no scope you can point it at to stay clear. Snapshot `~/.gemini/antigravity-cli/settings.json` somewhere outside the test tree first and restore it in a `trap`. Do not rely on `<file>.bak` — the writers overwrite it, so two runs destroy the original. Setting `HOME` does not save you either: agy's OAuth token lives in that same directory, so an isolated `HOME` is an unauthenticated one.
 >
 > The failure this prevents is not a crash. Run the conditions in one batch and an earlier permissive install silently rewrites the global file *before* the later "baseline" runs, so the baseline is not a baseline — both conditions pass and the result looks like success. Hold workspace trust constant across conditions for the same reason.
+
+Three confounds cost three runs when this was first done. All produce a plausible-looking "blocked", and none of them is a permission decision — so **always read what the agent actually said** before believing the marker:
+
+- **Untrusted workspace.** Claude discarded every allow rule and said so. Trust the test directory explicitly (`projects["<path>"].hasTrustDialogAccepted` in `~/.claude.json`) — surgically, add-key/delete-key, because that file is live and your own session writes to it. A wholesale snapshot restore can clobber concurrent changes.
+- **A `*` in the test directory name.** The Bash tool flagged it as a glob and refused before permissions were consulted. Keep fixture paths inert; do not name a directory after the rule it is testing.
+- **The `CROSS_CLI_ROLE` handshake preamble.** A delegate correctly refused it as untrusted control metadata in a user turn, so no tool call was ever attempted. Drop it for instrument tests — these are not delegations.
 
 If a constraint changed, update the code **and** the capability table in `README.md` — including its `verified against` column and the **Last verified** date beneath it. A stale date is a warning to readers; a fresh date on unverified claims is a lie to them. Only bump the date for versions you actually ran the commands against.
 

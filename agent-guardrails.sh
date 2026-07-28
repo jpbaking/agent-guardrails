@@ -619,6 +619,20 @@ to_agy() {
 }
 
 note() { printf '  %s\n' "$*"; }
+
+# Claude discards project-level permission rules in a workspace the user has
+# never trusted — "Ignoring N permissions.allow entries … this workspace has not
+# been trusted" — and trust does not inherit from a parent directory. So a
+# project install can look successful and gate nothing.
+#
+# Deliberately only a warning. Writing hasTrustDialogAccepted into
+# ~/.claude.json would suppress a security prompt on the user's behalf, which is
+# not something an install script should do quietly.
+claude_trust_note() { # $1 = project path
+  note "        ! Claude ignores project rules until this workspace is trusted."
+  note "          Run 'claude' in $1 once and accept the trust dialog,"
+  note "          otherwise the rules above are inert. (Global scope is unaffected.)"
+}
 backup() { cp "$1" "$1.bak"; }
 ensure_json() {
   mkdir -p "$(dirname "$1")"
@@ -1056,6 +1070,7 @@ EOF
   else
     echo "scope: project ($PROJ), FULLY PERMISSIVE"
     permit_claude "$PROJ/.claude/settings.json"
+    claude_trust_note "$PROJ"
     permit_codex  "$PROJ/.codex" "$PROJ"
     permit_agy    "${HOME}/.gemini/antigravity-cli/settings.json" "$PROJ"
   fi
@@ -1080,6 +1095,7 @@ else
   PROJ=$(cd "${PROJ:-$PWD}" && pwd)
   echo "scope: project ($PROJ)"
   write_claude "$PROJ/.claude/settings.json"
+  claude_trust_note "$PROJ"
   write_codex  "$PROJ/.codex"
   # Drop the trust block a previous --permissive run put in the global codex
   # config for this path; trusting it there would outrank what we just wrote.

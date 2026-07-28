@@ -196,7 +196,44 @@ agy names the mechanism itself in the denied case: *"The command was denied by a
 
 Codex is covered by the resolved-policy probe above instead; its gate is `approval_policy`, not a rule list, so there is no deny rule to override.
 
-Limits: the Claude condition has `defaultMode` **and** the catch-all rules live at once, so it proves the mode works, not which half did it. And this exercises permissive mode overriding a deny — not the 495-rule normal install, which is a separate question.
+This exercises permissive mode overriding a deny, not the 495-rule normal install, which is a separate question.
+
+#### If your admins disabled bypass mode
+
+Permissive mode still works — **as long as the workspace is trusted.** Managed settings can forbid `defaultMode: bypassPermissions`, which is why the catch-all rules are written alongside it; separating the two halves shows each authorises on its own.
+
+| project settings | `defaultMode` | command ran? |
+|---|---|---|
+| no rules | — | no (control) |
+| `Bash(*)`, `Read(*)`, `Edit(*)`, `Write(*)` | **absent** | **yes** — catch-alls alone suffice |
+| `Bash(touch:*)` | absent | yes (positive control, documented syntax) |
+| no rules | `bypassPermissions` | yes |
+
+Trust is the catch, and it cuts differently for each half:
+
+| workspace | bypass mode | permissive works? |
+|---|---|---|
+| trusted | disabled | **yes** |
+| trusted | available | yes |
+| untrusted | disabled | **no — rules discarded** |
+| untrusted | available | yes, on `defaultMode` alone |
+
+`defaultMode` is honoured in an untrusted workspace; **allow rules are not.** So an environment that disables bypass mode is exactly the one that depends on trust.
+
+#### Claude ignores project rules in an untrusted workspace
+
+This is not specific to permissive mode — **it applies to the ordinary 495-rule `--project` install too**, and it is the most likely reason a project install appears to do nothing:
+
+```
+Ignoring 10 permissions.allow entries from .claude/settings.json:
+this workspace has not been trusted.
+```
+
+Trust does not inherit: a subdirectory of a trusted parent is still untrusted. Install into a freshly cloned repo and the rules sit inert until you run Claude there once and accept the dialog — you get prompted for `npm test` and conclude the tool failed.
+
+`--project` prints a warning about this. It does **not** write `hasTrustDialogAccepted` into `~/.claude.json` for you: that suppresses a security prompt on your behalf, which an install script has no business doing quietly. Accept the dialog once, or set it yourself knowing what it means.
+
+Global scope is unaffected — `~/.claude/settings.json` is not workspace-scoped. (Asserted from the mechanism, not measured; the failure mode above was only ever observed on project files.)
 
 ### Uninstalling
 
@@ -253,6 +290,7 @@ These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](
 - **`npm run` executes whatever the project defines.** It is allowed, via the broad `npm`/`yarn`/`pnpm` rules, and it is the workhorse — most JS and React work is `npm run dev`, `npm run build`, `npm test`. That is the right call *for repositories you trust*, because the scripts are curated by the project. It is exactly the wrong call for a repo the agent just cloned: `npm run` and `npm install` (via `postinstall` hooks) are the widest arbitrary-execution paths on the JS side. If your agents clone untrusted code, that is a sandbox problem, not an allowlist one.
 - **An allowlist is not a sandbox.** `Bash(python *)` allows `python -c 'anything'`, and `Bash(gcc *)` will happily compile and link whatever it is pointed at. This tool reduces prompt fatigue for trusted toolchains; it is not a containment boundary. If you need containment, use a devcontainer or your harness's sandbox mode.
 - **Bare `bash` and `sh` are deliberately not allowlisted.** `bash -c '<anything>'` would make every other rule here meaningless, so only `shellcheck`, `shfmt`, and the no-op `bash -n` are allowed; `bash -c` is in the ask list. If you allowlist `Bash(bash *)` yourself, understand that you have effectively turned the allowlist off.
+- **A `--project` install on Claude is inert until the workspace is trusted.** Project-level `permissions.allow` entries are discarded wholesale in an untrusted workspace, and trust does not inherit from a parent directory. [Details above.](#claude-ignores-project-rules-in-an-untrusted-workspace) The installer warns; it will not accept the trust dialog for you.
 - **An `ask` rule shadows a more specific `allow` rule.** `Bash(npx *)` in ask would swallow `Bash(npx playwright *)` in allow. The rule lists are written to avoid overlaps entirely rather than depend on precedence; keep it that way when adding rules.
 - **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 490 rules are inert. Verify before relying on it.
 - **A denied push rejects the whole command.** The guard scans every segment of a compound command, so `make test && git push origin main` is denied in its entirety — the build does not run first. This is deliberate (a guard should fail closed), but it surprises people who expect only the push to be blocked. Run the work and the push as separate commands.
