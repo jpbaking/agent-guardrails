@@ -183,6 +183,21 @@ Global scope has no such dependency — user-level `config.toml` resolves to `ap
 
 Two limits on that evidence. `doctor` proves Codex **resolves** the settings, not that a live authenticated session then runs without prompting. And the binary carries the string `Ignored unsupported project-local config keys in …`, so project-local config honours only a subset of keys — `approval_policy` and `sandbox_mode` are demonstrably in it, anything added there later may not be.
 
+#### Does permissive mode actually change what runs?
+
+Yes — measured on Claude Code and agy by side effect rather than by reading the agent's prose. Each CLI was given a baseline config that **explicitly denies** a marker command, asked to run it, and the filesystem checked afterwards. Marker present means the tool call executed. Neither run passed a bypass flag, which would have made every condition pass.
+
+| CLI | baseline | after `--permissive` |
+|---|---|---|
+| **Claude Code** | `deny: ["Bash(touch *)"]` → not created | **created** |
+| **agy** | `deny: ["command(touch)"]` → not created | **created** |
+
+agy names the mechanism itself in the denied case: *"The command was denied by a user-configured deny rule."* That confirms both that agy enforces `deny` — its rule semantics are otherwise inferred — and that clearing it is what lets the command through.
+
+Codex is covered by the resolved-policy probe above instead; its gate is `approval_policy`, not a rule list, so there is no deny rule to override.
+
+Limits: the Claude condition has `defaultMode` **and** the catch-all rules live at once, so it proves the mode works, not which half did it. And this exercises permissive mode overriding a deny — not the 495-rule normal install, which is a separate question.
+
 ### Uninstalling
 
 ```bash
