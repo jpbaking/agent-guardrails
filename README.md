@@ -140,6 +140,8 @@ The guard is copied to `~/.agents/hooks/` so the absolute path written into your
 
 Every write is additive, de-duplicated, idempotent, and backed up to `<file>.bak` first. Your existing rules, hooks, model, and theme survive. Run it twice and nothing changes. (`--permissive` is the one exception — see below.)
 
+An AI coding agent (Claude Code, Cline, Codex, …) can instead follow [AGENT-INSTALL.md](AGENT-INSTALL.md), a merge-aware, survey-before-write procedure that does the same install through the script and reports every collision first.
+
 ### Fully permissive mode
 
 ```bash
