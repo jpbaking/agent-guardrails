@@ -8,16 +8,25 @@ Two shell scripts and some policy templates.
 
 ```
 agent-guardrails.sh              entry point — rule lists, translation, writers, removers
-hooks/git-push-guard.sh          the PreToolUse hook, shared by Claude and Codex
-enterprise/                      drop-in policy files for admins (generated, see below)
+hooks/git-push-guard.sh          the pre-tool hook, shared by Claude, Codex, Gemini CLI and Cline
+enterprise/                      drop-in policy files for admins (partly generated, see below)
 .guardrails-protected            this repo's own branch exemption (!main)
 ```
 
-`agent-guardrails.sh` holds the rule lists (`ALLOW`, `ASK`, `DENY`) as bash arrays near the top, a `to_agy` translator, three writers (`write_claude`, `write_codex`, `write_agy`) and three removers (`unwrite_*`) behind `--uninstall`. The guard is a standalone script that reads hook JSON on stdin and writes a decision to stdout.
+Exactly five harnesses are supported: Claude Code, Codex, agy, Gemini CLI and Cline. Do not add a sixth casually — every harness here earned its place by having its gating mechanism read out of the shipped binary or source (see below), and a half-understood one is worse than none.
 
-`enterprise/claude-managed-settings.json` is **generated** — regenerate it with `./agent-guardrails.sh --print --managed | jq '.claude' > enterprise/claude-managed-settings.json` in the same PR as any rule change, or it silently drifts from the script.
+`agent-guardrails.sh` holds the rule lists (`ALLOW`, `ASK`, `DENY`) as bash arrays near the top, two translators (`to_agy`, and `gemini_toml`, which emits a whole policy file), five writers (`write_claude`, `write_codex`, `write_agy`, `write_gemini`, `write_cline`), five removers (`unwrite_*`) behind `--uninstall`, and five `permit_*` functions behind `--permissive`. The guard is a standalone script that reads hook JSON on stdin and writes a decision to stdout, in one of four output protocols selected by a flag.
 
-The README quotes rule counts in **seven** places (the intro, the sample output block, three section headings, and two rows of the capability table). All of them must move together when you change the lists. `./agent-guardrails.sh --print | jq '{a:(.claude.permissions.allow|length),k:(.claude.permissions.ask|length),d:(.claude.permissions.deny|length),agy:(.agy.permissions.allow|length)}'` gives you the authoritative numbers.
+Gemini and Cline are the two whose files the script **owns** rather than merges into: `~/.gemini/policies/agent-guardrails.toml` and `PreToolUse.sh` in Cline's hooks directory. Both are rewritten whole on install and deleted on uninstall, and both carry `OWNED_MARK` — `owned_write` and `owned_remove` refuse to touch a same-named file without it. Keep that check; it is what stops the installer from deleting a user's own hook.
+
+`enterprise/claude-managed-settings.json` and `enterprise/gemini-policy.toml` are **generated** — regenerate both in the same PR as any rule change, or they silently drift from the script:
+
+```bash
+./agent-guardrails.sh --print --managed | jq '.claude'    > enterprise/claude-managed-settings.json
+./agent-guardrails.sh --print --managed | jq -r '.gemini' > enterprise/gemini-policy.toml
+```
+
+The README quotes rule counts in many places — the intro, the sample output block, three section headings, three rows of the capability table and the line beneath it, and a few in prose. All of them must move together when you change the lists; `grep -nE '\b(49[0-9]|27[0-9]|7[0-9])\b' README.md` finds them. `./agent-guardrails.sh --print | jq '{a:(.claude.permissions.allow|length),k:(.claude.permissions.ask|length),d:(.claude.permissions.deny|length),agy:(.agy.permissions.allow|length)}'` gives you the authoritative numbers.
 
 ## Ground rules
 
@@ -25,7 +34,7 @@ The README quotes rule counts in **seven** places (the intro, the sample output 
 
 **Never widen the allowlist casually.** A rule earns `allow` only if it is local, reversible, doesn't publish anything outward, and doesn't escalate privilege. When unsure, `ask` is the right answer — prompt fatigue is a worse outcome than a data breach, but only slightly.
 
-**Don't claim a capability you haven't verified in the binary.** The three harnesses differ in ways that are not documented anywhere. See below.
+**Don't claim a capability you haven't verified in the binary.** The five harnesses differ in ways that are not documented anywhere. See below.
 
 ## Rule ordering — the thing that will bite you
 
@@ -89,6 +98,15 @@ The consequence shapes the design: writing a value that will be clamped is worse
 
 **agy** — has `permissions.allow` / `.ask` / `.deny` in `~/.gemini/antigravity-cli/settings.json`, with rule syntax `command(…)`, `read_file(…)`, `write_file(…)`, `unsandboxed(…)`. It has no `permissionDecision`, `hookSpecificOutput`, or `hookEventName` anywhere in the binary, so hooks cannot gate permissions. It has no per-project settings file; project scope adds to `trustedWorkspaces`.
 
+**Gemini CLI** — a real policy engine: `~/.gemini/policies/*.toml`, `[[rule]]` tables with `toolName`, `commandPrefix` / `commandRegex` / `argsPattern`, `decision` (`allow` | `ask_user` | `deny`), `priority` 0–999 and optional `modes`. Final priority is `tier + priority/1000` with user = 4 and admin = 5, and the highest matching rule wins regardless of specificity — so `gemini_toml` assigns deny 300, ask 200, allow 100 to reproduce Claude's deny > ask > allow. `commandPrefix` compiles to `"command":<prefix>(?:[\s"]|\\")`, so it is word-bounded and also matches the bare command; a Claude rule that is not a plain `prefix *` becomes a `commandRegex`, anchored with a trailing `"` when it has no trailing `*`. Compound commands are split and every part must pass. Four things that will bite:
+
+- **The workspace tier is dead.** `<project>/.gemini/policies/` loads nothing (Gemini's own docs, issue #18186). Project scope gets the guard, never rules — do not "fix" this by writing global rules on a `--project` run.
+- **Plan mode is a lowest-tier `deny *`.** Any user-tier `allow` or `ask` without `modes` overrides it, which is why those rules carry `modes = ["default", "autoEdit"]`. `deny` rules have no `modes` and apply everywhere, `yolo` included.
+- **Hooks are `BeforeTool` in `settings.json`, matcher `run_shell_command`, timeout in milliseconds.** `tool_input.command` is a string and `tool_input.dir_path` may name the directory. The output is top-level `{"decision", "reason"}`: `deny`/`block` blocks the call, `ask` forces a prompt even over a policy `allow`, and `allow` is ignored. So the guard can deny and ask but cannot approve — and `git push` must stay out of the allowlist anyway, because a disabled or untrusted hook would then fail open.
+- **Redirection downgrades allow to ask** unless the rule sets `allowRedirection`. Ours do not, deliberately.
+
+**Cline** (3.x CLI, `@cline/core`) — no per-command matching at all. Its gate is per tool (`toolPolicies`, `--auto-approve`, default **true**). Hooks are *files* named after the event — `PreToolUse`, `PreToolUse.sh`, `PreToolUse.py`, … — in `~/Documents/Cline/Hooks`, `~/.cline/hooks`, `<ws>/.clinerules/hooks` and `<ws>/.cline/hooks`; all of them run, each through the interpreter its extension names (`.sh` → `bash`). The payload has no `tool_input`: the call is `tool_call: {id, name, input}`, the shell tool is `run_commands`, and its input is `{commands: [...]}` whose entries are strings or `{command, args}`. There is no `cwd`; use `workspaceRoots[0]`. The output is `{"cancel": true, "errorMessage": …}`, which becomes a stop control that **ends the run**; `review` is parsed and then never read, so there is no ask. The editor tool also has a field called `command`, which is why the guard filters on `tool_call.name == "run_commands"`.
+
 **Claude Code** — the permissive one. Full `allow`/`ask`/`deny` from a `PreToolUse` hook via `hookSpecificOutput`, matcher `Bash`, `tool_input.command` is a string.
 
 **Claude discards project-level rules in an untrusted workspace**, printing `Ignoring N permissions.allow entries from .claude/settings.json: this workspace has not been trusted`. Trust does not inherit from a parent directory, and `permissions.defaultMode` is *not* subject to it — only the rules are. Both harnesses therefore gate project-scoped config on trust (see the Codex note above), by different mechanisms and with different escape hatches. `--project` warns and stops there: writing `hasTrustDialogAccepted` into `~/.claude.json` would suppress a security prompt on the user's behalf. Do not "fix" the warning by making it automatic.
@@ -105,7 +123,19 @@ strings "$CX" | grep -oE '(hookSpecificOutput|permissionDecision|hookEventName)'
 A=$(command -v agy)
 strings "$A" | grep -oE '(command|read_file|write_file|unsandboxed)\([^)]{0,30}\)' | sort -u
 strings "$A" | grep -oE '"(allow|deny|ask|permissions|hooks)"' | sort -u
+
+# Gemini CLI and Cline ship JavaScript, so read the source rather than strings.
+GB=$(dirname "$(readlink -f "$(command -v gemini)")")          # …/@google/gemini-cli/bundle
+less "$GB/docs/reference/policy-engine.md" "$GB/docs/hooks/reference.md"
+grep -l 'function buildArgsPatterns' "$GB"/*.js                # commandPrefix compilation
+grep -l 'isAskDecision' "$GB"/*.js                             # which hook decisions count
+
+CN=$(dirname "$(readlink -f "$(command -v cline)")")/../node_modules/@cline
+grep -o 'cancel:es.boolean[^;]*' "$CN/core/dist/index.js"      # hook output schema
+grep -o 'RUN_COMMANDS:"[a-z_]*"' "$CN/core/dist/index.js"      # shell tool name
 ```
+
+Gemini's policy engine can be exercised without a model or a live config: import `loadPoliciesFromToml` and `PolicyEngine` from the bundle chunk that defines them, load the generated file plus `$GB/policies` (the built-in defaults, tier 1), and call `engine.check({name: "run_shell_command", args: {command}})`. Do it in every approval mode — `default`, `plan`, `yolo` — since `modes` is where a mistake hides. That checks rule matching, not the hook, and not what a live session does with the result.
 
 Strings tell you what a binary *contains*, not what it *does*. For anything about resolved configuration, measure it: `codex doctor --json` reports the policy Codex actually landed on, so point a scratch `CODEX_HOME` at a fixture and read it back.
 
@@ -147,7 +177,9 @@ bash -n agent-guardrails.sh && bash -n hooks/git-push-guard.sh
 shellcheck agent-guardrails.sh hooks/git-push-guard.sh   # if you have it
 ```
 
-**2. The guard's decision table.** Build a throwaway repo and drive the hook with synthetic payloads:
+**2. The guard's decision table.** Two invariants to keep: **every push in the command is judged and the strictest decision wins** — returning at the first decision lets an approved ask on one push carry a deny on the next along with it — and **a protected-branch ask degrades to deny, never to pass, on a host that cannot ask** (Codex, Cline). Every other ask may pass through.
+
+Build a throwaway repo and drive the hook with synthetic payloads:
 
 ```bash
 mkdir /tmp/gg && cd /tmp/gg
@@ -158,11 +190,12 @@ H=hooks/git-push-guard.sh; R=$PWD
 t() { echo "{\"tool_name\":\"Bash\",\"cwd\":\"$R\",\"tool_input\":{\"command\":$(jq -Rn --arg c "$1" '$c')}}" \
       | bash "$H" | jq -rc '.hookSpecificOutput.permissionDecision // "pass"'; }
 
-t "git push origin main"                        # deny
-t "git push origin develop"                     # deny
-t "git push origin HEAD:release/2.1"            # deny
+t "git push origin main"                        # ask
+t "git push origin develop"                     # ask
+t "git push origin HEAD:release/2.1"            # ask
 t "git push --all origin"                       # deny
-t "git push origin :main"                       # deny
+t "git push origin :main"                       # ask
+t "git push origin main && git push --all origin"  # deny — strictest wins, not first
 t "git push -u origin feature/x"                # allow
 t "git push"                                    # allow
 t "git add -A && git commit -m wip && git push" # allow
@@ -171,22 +204,48 @@ t "npm test"                                    # pass (no output)
 t "git status"                                  # pass (no output)
 ```
 
-Then the Codex path — argv array, `--deny-only`, and confirm allow/ask collapse to a silent pass:
+Then the Codex path — argv array, `--deny-only`. A protected-branch ask must become a **deny** (Codex cannot ask, and passing it through would drop the protection); every other ask, and allow, collapses to a silent pass:
 
 ```bash
 ct() { echo "{\"tool_name\":\"shell\",\"cwd\":\"$R\",\"tool_input\":{\"command\":[\"bash\",\"-lc\",$(jq -Rn --arg c "$1" '$c')]}}" \
        | bash "$H" --deny-only | jq -rc '.hookSpecificOutput.permissionDecision // "pass"'; }
 ct "git push origin main"          # deny, with a non-empty reason
+ct "git push --force origin feature/x"  # pass (no output)
 ct "git push -u origin feature/x"  # pass
+```
+
+Gemini — top-level `decision`, deny and ask only. Pass `cwd` as `/` and the repo as `dir_path`, which proves the guard reads `dir_path`: a bare `git push` would otherwise come back `ask` (no branch):
+
+```bash
+gt() { echo "{\"tool_name\":\"run_shell_command\",\"cwd\":\"/\",\"tool_input\":{\"command\":$(jq -Rn --arg c "$1" '$c'),\"dir_path\":\"$R\"}}" \
+       | bash "$H" --gemini | jq -rc '.decision // "pass"'; }
+gt "git push origin main"               # ask
+gt "git push --all origin"              # deny
+gt "git push --force origin feature/x"  # ask
+gt "git push"                           # pass (no output)
+```
+
+Cline — `tool_call` instead of `tool_input`, a list of commands, `workspaceRoots` instead of `cwd`, and `cancel` for deny. Run it from `/` so the guard has to use `workspaceRoots`:
+
+```bash
+lt() { echo "{\"workspaceRoots\":[\"$R\"],\"tool_call\":{\"name\":\"$2\",\"input\":{\"commands\":[\"npm test\",$(jq -Rn --arg c "$1" '$c')]}}}" \
+       | (cd / && bash "$H" --cline) | jq -rc 'if .cancel then "deny" else "pass" end'; }
+lt "git push origin main" run_commands               # deny
+lt "git push --force origin feature/x" run_commands  # pass (no output) — Cline has no ask
+lt "git push origin main" editor                     # pass (no output) — not the shell tool
 ```
 
 **3. The writers, against copies — never your live config.**
 
 ```bash
-mkdir -p /tmp/sb/.claude /tmp/sb/.codex /tmp/sb/gemini/antigravity-cli
+mkdir -p /tmp/sb/.claude /tmp/sb/.codex /tmp/sb/.gemini/antigravity-cli /tmp/sb/.cline/hooks
 cp ~/.claude/settings.json /tmp/sb/.claude/
-# … then sed the HOME-derived paths in a scratch copy of the script to point at /tmp/sb
+# Every path the script writes is derived from $HOME (or AGENT_GUARDRAILS_DIR /
+# CLINE_DIR), so a scratch HOME redirects all of it:
+HOME=/tmp/sb AGENT_GUARDRAILS_DIR=/tmp/sb/agents ./agent-guardrails.sh --global
 ```
+
+For Gemini and Cline, also seed a foreign `BeforeTool` hook in `.gemini/settings.json` and a foreign `PreToolUse.py` in `.cline/hooks/` — both must survive install and uninstall — and a hand-written `PreToolUse.sh` / `policies/agent-guardrails.toml` without the marker, which the installer must refuse to overwrite and uninstall must refuse to delete.
 
 Confirm, on the result: existing keys survive (`model`, `theme`, other hooks), counts are what you expect, a second run changes nothing, and the file still parses (`jq -e .`, or `python3 -c 'import tomllib…'` for TOML).
 
@@ -243,7 +302,7 @@ Ask where the damage lands, then pick the shape:
 
 Two hard rules. **Do not add `Bash(git push *)` to `ALLOW`** — that defeats the guard, which is the entire point of the project. And **do not add a bare shell** (`Bash(bash *)`, `Bash(sh *)`): `bash -c '<anything>'` makes every other rule in the file meaningless. Both of those live in `PERMIT_ALLOW` by way of `Bash(*)`, which is exactly why `--permissive` is a separate mode with a confirmation rather than a looser default.
 
-When you add a toolchain, update the README's allow/ask/deny tables and all seven rule counts, regenerate `enterprise/claude-managed-settings.json`, and run the shadow checker.
+When you add a toolchain, update the README's allow/ask/deny tables and every rule count, regenerate both generated files in `enterprise/`, and run the shadow checker.
 
 ## Style
 

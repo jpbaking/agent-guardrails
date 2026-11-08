@@ -4,9 +4,9 @@
 
 Coding agents are fast right up until they aren't. Every `npm test`, every `git diff`, every `pytest -k foo` stops and waits for you to click yes. So people reach for the bypass flag — and enterprise admins, reasonably, turn it off.
 
-`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~495 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that refuses to push to `main`.
+`agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~495 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that makes the agent stop and ask before it pushes to `main`.
 
-One command, all three agent CLIs:
+One command, all five supported agent CLIs — **Claude Code, Codex, agy, Gemini CLI and Cline**:
 
 ```bash
 ./agent-guardrails.sh --global
@@ -18,8 +18,13 @@ scope: global (user-level)
   claude  ~/.claude/settings.json  (+guard)
   codex   ~/.codex/hooks.json  (guard only, deny-only mode)
   agy     ~/.gemini/antigravity-cli/settings.json
+  gemini  ~/.gemini/policies/agent-guardrails.toml  (rules)
+          ~/.gemini/settings.json  (+guard: deny and ask; Gemini hooks cannot allow)
+  cline   ~/.cline/hooks/PreToolUse.sh  (guard only, deny-only)
 allow=495 ask=272 deny=76
 ```
+
+Those five are the whole list. Other harnesses — pi, Cursor, OpenCode and the rest — are not supported, and the script writes nothing for them.
 
 ---
 
@@ -29,7 +34,7 @@ Because you won't get it, and you shouldn't. Bypass mode is all-or-nothing: it t
 
 An allowlist is a different conversation. It's specific, it's reviewable, and it's the thing managed settings were built for. `--print` gives you a JSON fragment you can attach to a ticket, and `enterprise/` gives your admins drop-in policy files. That request gets approved.
 
-If you *do* want bypass anyway — on a throwaway VM, in a container, on a machine where nothing matters — [`--permissive`](#fully-permissive-mode) writes it into your configs for all three CLIs so you stop typing the flag. It is the opposite of the rest of this tool, and it says so before it runs.
+If you *do* want bypass anyway — on a throwaway VM, in a container, on a machine where nothing matters — [`--permissive`](#fully-permissive-mode) writes it into your configs for every supported CLI so you stop typing the flag. It is the opposite of the rest of this tool, and it says so before it runs.
 
 ## What you get
 
@@ -105,12 +110,17 @@ Anything not in any list also prompts — that's the default, and it does real w
 | you run | it does |
 |---|---|
 | `git push` on `feature/login` | **allow** |
-| `git push origin main` | **deny** |
-| `git push origin HEAD:release/2.1` | **deny** — glob `release/*` |
+| `git push origin main` | **ask** |
+| `git push origin HEAD:release/2.1` | **ask** — glob `release/*` |
 | `git push --force origin feature/login` | **ask** |
-| `git push --all origin` | **deny** — sweeps protected refs |
-| `git push origin :main` | **deny** — remote branch delete |
+| `git push origin :main` | **ask** — remote branch delete |
+| `git push --all origin` | **deny** — sweeps every ref at once |
 | `git add -A && git commit -m wip && git push` | **allow** — splits on `&&` |
+| `git push origin feat && git push --all` | **deny** — every push is judged, the strictest wins |
+
+Protected branches **ask** rather than deny, so a push you explicitly wanted goes ahead once you confirm it. The agent cannot answer the prompt itself, and this holds under `--dangerously-skip-permissions` too: measured with `claude -p` in bypass mode, a hook "ask" stopped the command where the no-hook control ran it.
+
+Codex and Cline hooks cannot ask, so there a protected push is still **blocked**, with a reason that says to push from a terminal or exempt the branch — letting it through would mean no prompt at all on Cline, which auto-approves everything. Gemini asks, like Claude.
 
 Protected by default: `main`, `master`, `develop`, `development`, `trunk`, `staging`, `stage`, `prod`, `production`, `release/*`, `hotfix/*`, plus whatever `origin/HEAD` actually points at. Override with `CLAUDE_PROTECTED_BRANCHES` or `~/.claude/protected-branches.txt`.
 
@@ -140,7 +150,7 @@ The guard is copied to `~/.agents/hooks/` so the absolute path written into your
 
 Every write is additive, de-duplicated, idempotent, and backed up to `<file>.bak` first. Your existing rules, hooks, model, and theme survive. Run it twice and nothing changes. (`--permissive` is the one exception — see below.)
 
-An AI coding agent (Claude Code, Cline, Codex, …) can instead follow [AGENT-INSTALL.md](AGENT-INSTALL.md), a merge-aware, survey-before-write procedure that does the same install through the script and reports every collision first.
+An AI coding agent (Claude Code, Codex, agy, Gemini CLI or Cline) can instead follow [AGENT-INSTALL.md](AGENT-INSTALL.md), a merge-aware, survey-before-write procedure that does the same install through the script and reports every collision first.
 
 ### Fully permissive mode
 
@@ -157,6 +167,8 @@ The inverse of everything else here: it removes the gate rather than scoping it.
 | **Claude Code** | `defaultMode: "bypassPermissions"`, plus catch-all `Bash(*)`/`Read(*)`/`Write(*)`/… rules so it still holds if a managed policy strips `defaultMode`. `ask` and `deny` set to `[]`. Guard removed. |
 | **Codex** | `approval_policy = "never"`, `sandbox_mode = "danger-full-access"` in `config.toml`; `--project` also adds `[projects."<path>"] trust_level = "trusted"` to the global config. Guard removed. |
 | **agy** | `command(*)`, `read_file(*)`, `write_file(*)` in `allow` — the exact inverse of its default, which is to *ask* on `command(*)`. `ask`/`deny` emptied, `allowNonWorkspaceAccess: true`. |
+| **Gemini CLI** | A policy file allowing `toolName = "*"` — the policy form of `--yolo`, which `settings.json` cannot set. Copies Gemini's own `yolo.toml`, including its one exception: `ask_user` still asks, since auto-approving it would answer a question meant for you. Guard removed. **Global only** — see below. |
+| **Cline** | Nothing to widen — Cline auto-approves every tool unless you run it with `--auto-approve false`. Guard removed. |
 
 It prints what it is about to do and waits for you to type `yes`; `--yes` skips that, and it refuses to run non-interactively without it. `--managed` and `--permissive` together are an error — one pins policy centrally, the other removes it.
 
@@ -257,7 +269,7 @@ OnRequest, OnRequest] (set by /etc/codex/requirements.toml)
 
 Since permissive mode comments your existing value out on the way past, running it under such a policy would leave you **more** gated than before — the one outcome worse than doing nothing. So it doesn't: when `/etc/codex/requirements.toml` forbids either value, `--permissive` skips Codex, leaves the config untouched, and leaves the push guard in place. It says so rather than reporting a success it didn't achieve.
 
-Claude and agy are still made permissive in that case — the policy constrains Codex only. Set `CODEX_REQUIREMENTS` to point the check at a different file if you need to test it.
+Claude, agy, Gemini CLI and Cline are still made permissive in that case — the policy constrains Codex only. Set `CODEX_REQUIREMENTS` to point the check at a different file if you need to test it.
 
 "Skips" means nothing is written for Codex: no policy block, your existing `approval_policy` and `sandbox_mode` not displaced, no `trust_level` entry, and the push guard left in `hooks.json` rather than removed. It skips because writing would leave you worse off — not because the settings are unwanted.
 
@@ -281,6 +293,12 @@ Two things worth knowing:
 
 Limit on the evidence: `exec` is non-interactive, so it cannot distinguish "would have prompted you" from "refused" — there is nobody to approve. In an interactive session `approval_policy` decides whether an escalation prompts; the table above establishes where the sandbox boundary sits, not what the prompt would have said.
 
+#### Gemini permissive is global only
+
+Gemini's policy engine has a workspace tier, and its own reference documents it as non-functional: *"Defining policies in a workspace's `.gemini/policies` directory will not have any effect"* ([issue #18186](https://github.com/google-gemini/gemini-cli/issues/18186)). So there is no project-level file that could widen Gemini for one repo. `--project --permissive` removes the guard from `<project>/.gemini/settings.json` and says it changed nothing else; for one permissive project, pass `--yolo` to `gemini` yourself.
+
+Gemini still asks in a few cases it flags on its own even under an allow-everything policy — for example, a build or test command run after the agent edited a build file.
+
 ### Uninstalling
 
 ```bash
@@ -292,29 +310,41 @@ This **subtracts exactly the rules it added** and strips the guard hook — it d
 
 Two things it deliberately leaves behind: the guard script itself (it prints the path and the `rm` for you, in case a project-scope install still references it), and `[features] hooks = true` in Codex's `config.toml`, since your other hooks may need it. On agy it leaves `trustedWorkspaces` and `allowNonWorkspaceAccess` alone.
 
+Gemini CLI and Cline are different: there the script owns whole files — `~/.gemini/policies/agent-guardrails.toml` and `PreToolUse.sh` in Cline's hooks directory — because both CLIs load every file in those directories. Uninstall deletes them, but only if they carry the script's `agent-guardrails: generated` marker. A file of the same name that you wrote yourself is never overwritten or deleted; the installer says so and skips it.
+
 It also undoes a `--permissive` install: the `config.toml` block goes, the keys that block displaced are un-commented back to their original values, the `[projects."<path>"]` trust entry added for a project is removed, and `defaultMode: bypassPermissions` is deleted. Uninstalling gets you to *no rules*, not back to the permissive state.
 
 Rules the project shipped in earlier versions and has since retired are subtracted too, so an uninstall is clean even if you installed an old version. One caveat remains: if a rule of your own is byte-identical to one of ours, uninstall removes it too — after the fact there is no way to tell them apart.
 
 **Claude Code won't pick the hook up mid-session** — open `/hooks` once to reload, or start a new session.
 
-## The three harnesses are not equal
+## The five harnesses are not equal
 
-This is the part other tools gloss over. Each CLI's capabilities were determined by reading its binary, not by guessing:
+This is the part other tools gloss over. Each CLI's capabilities were determined by reading its binary or its shipped source, not by guessing:
 
-| | allowlist | push guard | verified against |
-|---|---|---|---|
-| **Claude Code** | 495 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` |
-| **Codex** | **none** — no allowlist mechanism exists | **deny only** | `0.145.0` |
-| **agy** | 490 rules, `command(git commit)` | **none** | `1.1.7` |
+| | allowlist | push guard | verified against | on |
+|---|---|---|---|---|
+| **Claude Code** | 495 rules, `Bash(git commit *)` | full — allow, ask, and deny | `2.1.220` | 2026-07-29 |
+| **Codex** | **none** — no allowlist mechanism exists | **deny only** | `0.145.0` | 2026-07-29 |
+| **agy** | 490 rules, `command(git commit)` | **none** | `1.1.7` | 2026-07-29 |
+| **Gemini CLI** | 495 rules, `commandPrefix = "git commit"`, global only | **deny and ask** — not allow | `0.67.0` | 2026-11-08 |
+| **Cline** | **none** — tools are auto-approved, not matched per command | **deny only**, and a deny ends the run | `3.0.74` | 2026-11-08 |
 
-> **Last verified: 2026-07-29.** These CLIs ship fast — agy moved from `1.1.6` to `1.1.7` during a single afternoon of writing this. If the date above is old, treat the table as a starting point rather than fact.
+> **Check the dates in the last column.** These CLIs ship fast — agy moved from `1.1.6` to `1.1.7` during a single afternoon of writing this. If a date is old, treat that row as a starting point rather than fact.
 
-**Codex** has no per-command allowlist at all. Its gating is `approval_policy` × `sandbox_mode` × `[projects.*] trust_level`. And its hook engine rejects anything but a denial — the binary literally carries the string `PreToolUse hook returned unsupported permissionDecision:allow`. So Codex gets the guard in `--deny-only` mode and no rules. That composes well: if your Codex is already on a trusted project with full access, the guard carves protected branches back out.
+Gemini gets every one of Claude's 495 allow, 272 ask and 76 deny rules, translated one for one.
+
+**Codex** has no per-command allowlist at all. Its gating is `approval_policy` × `sandbox_mode` × `[projects.*] trust_level`. And its hook engine rejects anything but a denial — the binary literally carries the string `PreToolUse hook returned unsupported permissionDecision:allow`. So Codex gets the guard in `--deny-only` mode and no rules — and since it cannot ask, a protected-branch push that would ask on Claude is blocked on Codex. That composes well: if your Codex is already on a trusted project with full access, the guard carves protected branches back out.
 
 The third term in that product is not decoration. A project-local `.codex/config.toml` is read **only when the directory is trusted**, which is why `--project --permissive` writes a `trust_level` entry as well — [measured, with the 2×2](#why-the-codex-side-writes-a-trust-entry). Anything project-scoped you add for Codex later inherits that dependency.
 
 **agy** has the allowlist (its own syntax: `command(…)`, `read_file(…)`, `write_file(…)`) but no `permissionDecision` protocol in its hooks, so the guard can't run there. Worth knowing: agy asks on `command(*)` by default — *every* shell command — so the allowlist is the whole win there.
+
+**Gemini CLI** has a real policy engine — `~/.gemini/policies/*.toml`, decisions `allow`/`ask_user`/`deny`, and numeric priorities — so it gets the full rule set. The installer writes priorities deny 300 > ask 200 > allow 100, which reproduces Claude's deny > ask > allow, so a narrow `ask` over a broad `allow` (`terraform apply` under `terraform *`) works the same way. `commandPrefix` matching is word-bounded and is checked against each part of a compound command, so `git status && sudo rm x` is denied. The `allow` and `ask` rules are limited to the `default` and `autoEdit` modes, because Gemini's read-only plan mode is a built-in `deny *` at the lowest tier and a user-tier allow would override it. Its `BeforeTool` hook honours `decision: "deny"` and `"ask"` but does nothing with `"allow"`, so the guard asks on protected and force pushes and blocks `--all`/`--mirror`, while an ordinary feature-branch push falls through to Gemini's usual prompt. Two catches: the workspace policy tier does not work, so a `--project` install gets the guard but no rules; and Gemini skips workspace settings, hooks included, in a folder you have not trusted.
+
+The rule behaviour above — word boundaries, priorities, compound commands, plan mode — was checked by loading the generated file through Gemini's own `loadPoliciesFromToml` and `PolicyEngine`, imported from the installed bundle. The hook behaviour was read from the bundle's source and has **not** yet been exercised in a live Gemini session.
+
+**Cline** (the 3.x CLI) has no per-command allowlist. Its gate is per *tool* — `toolPolicies` / `--auto-approve`, which defaults to **true**, so every shell command runs unprompted out of the box. The one gate it does offer is a `PreToolUse` hook *file* in `~/.cline/hooks/` or `<project>/.cline/hooks/`, run with bash, payload on stdin. It answers `{"cancel": true, "errorMessage": …}`, and that **ends the whole run**, not just the one tool call. A `review` field is parsed but never acted on, so there is no ask. So Cline gets the guard in deny-only mode: a protected-branch push, which asks on Claude, is blocked on Cline — that guard is the only thing standing between it and `git push origin main`. All of this comes from reading the shipped `@cline/core` source; it has **not** yet been exercised in a live Cline session.
 
 These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](CONTRIBUTING.md) has the exact commands to re-verify them against a new release — please update the table and its date in the same PR.
 
@@ -325,6 +355,9 @@ These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](
 - `claude-managed-settings.json` → `/etc/claude-code/managed-settings.json`, with `allowManagedPermissionRulesOnly: true` so policy is the only source of permission rules
 - `codex-managed-config.toml` → `/etc/codex/managed_config.toml`
 - `codex-requirements.toml` → `/etc/codex/requirements.toml`, pinning `allowed_approval_policies` and `allowed_sandbox_modes`
+- `gemini-policy.toml` → `/etc/gemini-cli/policies/`, Gemini's admin tier, which outranks every user policy — including the allow-everything file `--permissive` writes. Gemini ignores the directory unless it is root-owned and not group- or world-writable.
+
+Cline has no central policy mechanism this tool knows of, so there is nothing to ship for it.
 
 `./agent-guardrails.sh --print --managed` prints the same content for pasting into a ticket.
 
@@ -341,7 +374,9 @@ These hold against this tool, not just against users: deploy `codex-requirements
 - **A `--project` install on Claude is inert until the workspace is trusted.** Project-level `permissions.allow` entries are discarded wholesale in an untrusted workspace, and trust does not inherit from a parent directory. [Details above.](#claude-ignores-project-rules-in-an-untrusted-workspace) The installer warns; it will not accept the trust dialog for you.
 - **An `ask` rule shadows a more specific `allow` rule.** `Bash(npx *)` in ask would swallow `Bash(npx playwright *)` in allow. The rule lists are written to avoid overlaps entirely rather than depend on precedence; keep it that way when adding rules.
 - **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 490 rules are inert. Verify before relying on it.
-- **A denied push rejects the whole command.** The guard scans every segment of a compound command, so `make test && git push origin main` is denied in its entirety — the build does not run first. This is deliberate (a guard should fail closed), but it surprises people who expect only the push to be blocked. Run the work and the push as separate commands.
+- **The guard's decision covers the whole command.** It scans every segment of a compound command, so `make test && git push origin main` asks (or, on Codex and Cline, is blocked) as a whole — the build does not run first, and approving it approves both. Run the work and the push as separate commands if you want to approve only the push.
+- **Gemini still prompts on a plain feature-branch push.** Its hooks can deny and ask but cannot allow, and `git push` is never allowlisted (see the push guard above), so the one thing the guard approves on Claude still stops for a click on Gemini. It also asks on any command with a redirection (`ls > out.txt`) even when the command itself is allowlisted — that is Gemini's own rule, left as is.
+- **On Cline the guard is the only gate, and a deny ends the run.** Cline auto-approves every tool by default and has no command allowlist, so the allow/ask/deny lists do not apply there at all. When the guard denies a push, Cline stops the task rather than letting the agent try something else. Protected-branch pushes are blocked rather than asked for the same reason, and force pushes to feature branches are not stopped at all, because Cline has no way to ask.
 - **Bypass mode skips the rules.** If you run with `--dangerously-skip-permissions` anyway, allow/ask/deny are ignored wholesale — only the hook still fires. `--permissive` is that state made persistent, and it removes the hook too, so nothing fires at all.
 
 ### Overriding the guard

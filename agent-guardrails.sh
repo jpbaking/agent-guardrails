@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# agent-guardrails — one scoped permissions allowlist for every agent CLI on
-# this machine (Claude Code, Codex, agy), plus the git-push branch guard.
+# agent-guardrails — one scoped permissions allowlist for the five supported
+# agent CLIs (Claude Code, Codex, agy, Gemini CLI, Cline), plus the git-push
+# branch guard. No other harness is supported.
 #
 #   ./agent-guardrails.sh --global            # user-level, every harness
 #   ./agent-guardrails.sh --project [PATH]    # project/workspace-level (default: cwd)
@@ -25,6 +26,11 @@
 #                                                                    settings.json
 #   project   <p>/.claude/settings.json   <p>/.codex/hooks.json    trustedWorkspaces += <p>
 #
+#   scope     Gemini CLI                              Cline
+#   global    ~/.gemini/policies/agent-guardrails.toml ~/.cline/hooks/PreToolUse.sh
+#             + guard in ~/.gemini/settings.json
+#   project   guard in <p>/.gemini/settings.json only  <p>/.cline/hooks/PreToolUse.sh
+#
 # Capability differences, handled automatically:
 #   - Codex has no allowlist at all (approval_policy x sandbox_mode x trust_level
 #     instead), and its PreToolUse hooks may only return "deny" — so it gets the
@@ -32,6 +38,11 @@
 #   - agy has no permissionDecision hook protocol, so it gets rules but no guard.
 #     It also has no per-project settings file; project scope adds the path to
 #     trustedWorkspaces in its global settings instead.
+#   - Gemini CLI gets the rules as a policy-engine TOML file and the guard as a
+#     BeforeTool hook (deny and ask only). Its workspace policy tier does not
+#     work, so project scope installs the guard but no rules.
+#   - Cline has no per-command allowlist (it auto-approves every tool by
+#     default), so it gets the guard only, deny-only, as a PreToolUse hook file.
 #   - Under --permissive, Codex is the one that actually needs config.toml
 #     rewritten (approval_policy/sandbox_mode), since it has no rules to widen.
 #
@@ -598,6 +609,18 @@ TRUST_BEGIN="# >>> agent-guardrails permissive trust: "
 # Prefix that matches every block this script writes, for uninstall.
 ANY_BEGIN="# >>> agent-guardrails"
 
+# ── Gemini CLI and Cline ─────────────────────────────────────────────────────
+# Both get a file this script owns outright rather than a merge into the
+# user's: Gemini loads every *.toml in its policy directory, and Cline runs
+# every PreToolUse.<ext> in its hooks directory. So install rewrites the file,
+# uninstall deletes it — but only when it carries this marker, so a file of the
+# same name that someone else wrote is never touched.
+OWNED_MARK="agent-guardrails: generated"
+GEMINI_SETTINGS="${HOME}/.gemini/settings.json"
+GEMINI_POLICY="${HOME}/.gemini/policies/agent-guardrails.toml"
+CLINE_HOME="${CLINE_DIR:-$HOME/.cline}"
+CLINE_HOOK_FILE="PreToolUse.sh"
+
 # ───────────────────────────────────────────────────────────────────── plumbing
 
 arr() { printf '%s\n' "$@" | jq -R . | jq -s .; }
@@ -619,6 +642,71 @@ to_agy() {
 }
 
 note() { printf '  %s\n' "$*"; }
+
+# Translate the Claude rule lists into a Gemini CLI policy-engine TOML file.
+#   Bash(git status *) -> commandPrefix "git status"   (Gemini's prefix match is
+#                         word-bounded and also matches the bare command)
+#   Bash(pwd)          -> commandRegex 'pwd"'          (exact: the closing quote
+#                         of the JSON-encoded command anchors the end)
+#   Bash(rm -rf /*)    -> commandRegex 'rm -rf /.*'    (any other glob)
+#   Read(//p/**)       -> read_file, argsPattern on "file_path"
+# Priorities reproduce Claude's precedence, deny > ask > allow. allow and ask
+# are kept out of plan mode: Gemini's read-only plan mode is a built-in
+# "deny *" at the lowest tier, and a user-tier allow would punch straight
+# through it. deny applies in every mode, yolo included.
+gemini_toml() { # $1 = tier word for the header ("user" or "admin")
+  jq -rn \
+    --argjson allow "$(arr "${ALLOW[@]}")" \
+    --argjson ask   "$(arr "${ASK[@]}")" \
+    --argjson deny  "$(arr "${DENY[@]}")" \
+    --arg mark "$OWNED_MARK" --arg tier "$1" '
+    def esc: gsub("(?<c>[.+()\\[\\]{}|?^$\\\\])"; "\\\(.c)");
+    def inner: capture("^(?<k>[A-Za-z]+)\\((?<v>.*)\\)$");
+    def isprefix: endswith(" *") and (.[:-2] | contains("*") | not);
+    def cmdre: (split("*") | map(esc) | join(".*")) + (if endswith("*") then "" else "\"" end);
+    def pathre: (split("**") | map(split("*") | map(esc) | join("[^\"/]*")) | join("[^\"]*"))
+                + (if endswith("*") then "" else "\"" end);
+    def tail($dec; $prio):
+      "decision = \"\($dec)\"\npriority = \($prio)\n"
+      + (if $dec == "deny" then "denyMessage = \"Blocked by agent-guardrails.\"\n"
+         else "modes = [\"default\", \"autoEdit\"]\n" end) + "\n";
+    def rules($dec; $prio):
+      map(inner) as $r
+      | ($r | map(select(.k == "Bash") | .v)) as $b
+      | ($b | map(select(isprefix) | .[:-2])) as $pfx
+      | ($b | map(select(isprefix | not))) as $rx
+      | ($r | map(select(.k == "Read") | .v[1:])) as $rd
+      | (if ($pfx | length) == 0 then "" else
+          "[[rule]]\ntoolName = \"run_shell_command\"\ncommandPrefix = [\n"
+          + ($pfx | map("  " + tojson) | join(",\n")) + "\n]\n" + tail($dec; $prio) end)
+      + ($rx | map("[[rule]]\ntoolName = \"run_shell_command\"\ncommandRegex = "
+                   + (cmdre | tojson) + "\n" + tail($dec; $prio)) | join(""))
+      + ($rd | map("[[rule]]\ntoolName = \"read_file\"\nargsPattern = "
+                   + ("\"file_path\":\"" + pathre | tojson) + "\n" + tail($dec; $prio)) | join(""));
+    "# \($mark) by agent-guardrails.sh — Gemini CLI policy, \($tier) tier.\n"
+    + (if $tier == "admin"
+       then "# Deploy to /etc/gemini-cli/policies/ — root-owned and not group- or\n"
+            + "# world-writable, or Gemini ignores the whole directory.\n"
+       else "# Do not edit: re-run the installer. --uninstall deletes this file.\n" end)
+    + "# allow=\($allow | length) ask=\($ask | length) deny=\($deny | length)"
+    + " — priorities deny 300 > ask 200 > allow 100.\n\n"
+    + ($deny | rules("deny"; 300)) + ($ask | rules("ask_user"; 200)) + ($allow | rules("allow"; 100))
+    | sub("\n+$"; "\n")'
+}
+
+# --permissive for Gemini: the policy equivalent of --yolo, which cannot be set
+# from settings.json (defaultApprovalMode only takes default/auto_edit/plan).
+# Mirrors Gemini's own yolo.toml, ask_user exception included — that tool asks
+# the human a question, and auto-approving it would answer on their behalf.
+gemini_permit_toml() {
+  printf '%s\n' \
+    "# $OWNED_MARK by agent-guardrails.sh — Gemini CLI policy, FULLY PERMISSIVE." \
+    "# Do not edit: re-run the installer. --uninstall deletes this file." \
+    "" \
+    "[[rule]]" 'toolName = "ask_user"' 'decision = "ask_user"' "priority = 999" \
+    "" \
+    "[[rule]]" 'toolName = "*"' 'decision = "allow"' "priority = 998" "allowRedirection = true"
+}
 
 # Claude discards project-level permission rules in a workspace the user has
 # never trusted — "Ignoring N permissions.allow entries … this workspace has not
@@ -980,6 +1068,129 @@ write_agy() { # $1 = settings.json path, $2 = optional workspace to trust
   note "        no guard — agy hooks have no permissionDecision protocol"
 }
 
+# ── Gemini CLI and Cline ──────────────────────────────────────────────────────
+# Unlike the three above, these are skipped outright when the CLI is absent:
+# their config directories are not something to create speculatively.
+have_gemini() { [ -f "$GEMINI_SETTINGS" ] || command -v gemini >/dev/null 2>&1; }
+have_cline()  { [ -d "$CLINE_HOME" ] || command -v cline >/dev/null 2>&1; }
+
+# The jq that takes the guard out of a Gemini settings.json, shared by every
+# Gemini writer and remover. Same shape as Claude's, under BeforeTool.
+GEMINI_UNGUARD='
+  if .hooks.BeforeTool then
+    .hooks.BeforeTool |= (
+      map(.hooks //= [] | .hooks |= map(select((.command // "") | test("git-push-guard\\.sh") | not)))
+      | map(select(.hooks | length > 0)))
+    | if (.hooks.BeforeTool | length) == 0 then del(.hooks.BeforeTool) else . end
+    | if (.hooks | length) == 0 then del(.hooks) else . end
+  else . end'
+
+# Write a file this script owns. Refuses to replace a file of the same name
+# that does not carry OWNED_MARK. No <file>.bak: the content is regenerated
+# from this script every run, and a backup would sit inside a directory the
+# CLI scans (Cline's hooks dir, Gemini's policies dir).
+owned_write() { # $1 = label for messages, $2 = path, stdin = content
+  if [ -f "$2" ] && ! grep -qF "$OWNED_MARK" "$2"; then
+    note "$(printf '%-7s' "$1") ! $2 exists and was not written by this tool — left alone"
+    return 1
+  fi
+  mkdir -p "$(dirname "$2")"
+  cat > "$2"
+}
+owned_remove() { # $1 = path. Returns 1 when there was nothing of ours to remove.
+  [ -f "$1" ] && grep -qF "$OWNED_MARK" "$1" || return 1
+  rm -f "$1"
+}
+
+gemini_trust_note() { # $1 = project path
+  note "        ! Gemini ignores workspace settings, hooks included, in an untrusted"
+  note "          folder. Trust $1 in Gemini (or a parent with TRUST_PARENT),"
+  note "          otherwise the guard above never runs."
+}
+
+write_gemini() { # $1 = settings.json, $2 = policy file ("" at project scope)
+  local f=$1 pol=${2:-}
+  have_gemini || { note "gemini  skipped (Gemini CLI not installed)"; return; }
+  if [ -n "$pol" ]; then
+    gemini_toml user | owned_write gemini "$pol" && note "gemini  $pol  (rules)"
+  else
+    note "gemini  no rules at project scope — Gemini's workspace policy tier is"
+    note "        non-functional (its own docs, issue #18186); --global installs them"
+  fi
+  [ "$DO_HOOK" -eq 1 ] || return 0
+  ensure_json "$f" '{}'
+  backup "$f"
+  jq --arg cmd "bash '$GUARD' --gemini" "$GEMINI_UNGUARD"'
+    | .hooks //= {} | .hooks.BeforeTool //= []
+    | .hooks.BeforeTool += [{matcher: "run_shell_command",
+        hooks: [{type: "command", name: "git-push-guard", command: $cmd, timeout: 10000,
+                 description: "Asks before git push to protected branches"}]}]
+  ' "$f.bak" > "$f"
+  note "        $f  (+guard: deny and ask; Gemini hooks cannot allow)"
+  [ -n "$pol" ] || gemini_trust_note "$(dirname "$(dirname "$f")")"
+  if [ "$(jq -r '.hooksConfig.enabled' "$f")" = "false" ]; then
+    note "        ! hooksConfig.enabled is false in $f — the guard will not run"
+  fi
+}
+
+unwrite_gemini() { # $1 = settings.json, $2 = policy file ("" at project scope)
+  local f=$1 pol=${2:-}
+  if [ -n "$pol" ] && owned_remove "$pol"; then note "gemini  removed $pol"; fi
+  [ -f "$f" ] || { note "gemini  skipped ($f not found)"; return; }
+  jq -e . "$f" >/dev/null || { echo "$f is not valid JSON" >&2; exit 1; }
+  backup "$f"
+  jq "$GEMINI_UNGUARD" "$f.bak" > "$f"
+  note "gemini  cleaned $f"
+}
+
+permit_gemini() { # $1 = settings.json, $2 = policy file ("" at project scope)
+  local f=$1 pol=${2:-}
+  have_gemini || { note "gemini  skipped (Gemini CLI not installed)"; return; }
+  if [ -n "$pol" ]; then
+    gemini_permit_toml | owned_write gemini "$pol" \
+      && note "gemini  $pol  (allow * — the policy form of --yolo)"
+  else
+    note "gemini  NOT made permissive at project scope — workspace policies do not"
+    note "        load in Gemini; use --global, or pass --yolo yourself"
+  fi
+  if [ -f "$f" ] && jq -e . "$f" >/dev/null 2>&1; then
+    backup "$f"
+    jq "$GEMINI_UNGUARD" "$f.bak" > "$f"
+    note "        guard removed from $f"
+  fi
+}
+
+# Cline runs every hook file named after an event (PreToolUse, PreToolUse.sh,
+# PreToolUse.py, …) in its hook directories, each through the interpreter its
+# extension names. A .sh file is run with bash and gets the payload on stdin.
+cline_hook() {
+  printf '%s\n' "#!/usr/bin/env bash" \
+    "# $OWNED_MARK by agent-guardrails.sh — --uninstall deletes this file." \
+    "exec bash '$GUARD' --cline"
+}
+
+write_cline() { # $1 = hooks directory
+  local f="$1/$CLINE_HOOK_FILE"
+  have_cline || { note "cline   skipped (Cline not installed)"; return; }
+  [ "$DO_HOOK" -eq 1 ] || { note "cline   skipped (--no-hook; Cline gets no rules, only the guard)"; return; }
+  cline_hook | owned_write cline "$f" || return 0
+  note "cline   $f  (guard only, deny-only)"
+  note "        Cline has no per-command allowlist; a deny ends the whole run"
+}
+
+unwrite_cline() { # $1 = hooks directory
+  if owned_remove "$1/$CLINE_HOOK_FILE"; then note "cline   removed $1/$CLINE_HOOK_FILE"
+  else note "cline   skipped (no guard hook of ours in $1)"; fi
+}
+
+# Cline already auto-approves every tool unless run with --auto-approve false,
+# so permissive has nothing to widen. The guard is the only gate it has.
+permit_cline() { # $1 = hooks directory
+  have_cline || { note "cline   skipped (Cline not installed)"; return; }
+  owned_remove "$1/$CLINE_HOOK_FILE" && note "cline   guard removed ($1/$CLINE_HOOK_FILE)"
+  note "cline   nothing else to change — Cline auto-approves every tool by default"
+}
+
 # ───────────────────────────────────────────────────────────────────── dispatch
 
 # The whole header block is the help text, so print it up to the first line
@@ -1019,13 +1230,16 @@ if [ "$SCOPE" = "print" ] && [ "$PERMISSIVE" -eq 1 ]; then
   jq -n \
     --argjson allow "$(arr "${PERMIT_ALLOW[@]}")" \
     --argjson agy_allow "$(printf '%s\n' "${PERMIT_AGY[@]}" | jq -R . | jq -s .)" \
-    --arg toml "$(printf '%s\n' "${PERMIT_CODEX_TOML[@]}")" '
+    --arg toml "$(printf '%s\n' "${PERMIT_CODEX_TOML[@]}")" \
+    --arg gemini "$(gemini_permit_toml)" '
     {claude: {permissions: {allow: $allow, ask: [], deny: [],
                             defaultMode: "bypassPermissions"}},
      agy: {permissions: {allow: $agy_allow, ask: [], deny: []},
            allowNonWorkspaceAccess: true},
      codex: ("config.toml: " + ($toml | gsub("\n"; "; "))
              + " (+ [projects.\"<path>\"] trust_level = trusted for --project)"),
+     gemini: $gemini,
+     cline: "nothing to write — Cline auto-approves every tool by default; guard removed",
      guard: "removed — permissive mode installs no push guard"}'
   exit 0
 fi
@@ -1036,11 +1250,14 @@ if [ "$SCOPE" = "print" ]; then
     --argjson deny "$(arr "${DENY[@]}")" --argjson managed "$MANAGED" \
     --argjson agy_allow "$(to_agy "${ALLOW[@]}" | jq -R . | jq -s .)" \
     --argjson agy_ask "$(to_agy "${ASK[@]}" | jq -R . | jq -s .)" \
-    --argjson agy_deny "$(to_agy "${DENY[@]}" | jq -R . | jq -s .)" '
+    --argjson agy_deny "$(to_agy "${DENY[@]}" | jq -R . | jq -s .)" \
+    --arg gemini "$(gemini_toml "$([ "$MANAGED" -eq 1 ] && echo admin || echo user)")" '
     {claude: ({permissions: {allow: $allow, ask: $ask, deny: $deny}}
               + (if $managed == 1 then {allowManagedPermissionRulesOnly: true} else {} end)),
      agy: {permissions: {allow: $agy_allow, ask: $agy_ask, deny: $agy_deny}},
-     codex: "no allowlist — approval_policy x sandbox_mode x trust_level; enterprise: /etc/codex/managed_config.toml"}'
+     codex: "no allowlist — approval_policy x sandbox_mode x trust_level; enterprise: /etc/codex/managed_config.toml",
+     gemini: $gemini,
+     cline: "no allowlist — every tool is auto-approved unless run with --auto-approve false; guard only"}'
   exit 0
 fi
 
@@ -1050,12 +1267,16 @@ if [ "$UNINSTALL" -eq 1 ]; then
     unwrite_claude "${HOME}/.claude/settings.json"
     unwrite_codex  "${HOME}/.codex"
     unwrite_agy    "${HOME}/.gemini/antigravity-cli/settings.json"
+    unwrite_gemini "$GEMINI_SETTINGS" "$GEMINI_POLICY"
+    unwrite_cline  "$CLINE_HOME/hooks"
   else
     PROJ=$(cd "${PROJ:-$PWD}" && pwd)
     echo "uninstall: project ($PROJ)"
     unwrite_claude "$PROJ/.claude/settings.json"
     unwrite_codex  "$PROJ/.codex"
     unwrite_agy    "${HOME}/.gemini/antigravity-cli/settings.json"
+    unwrite_gemini "$PROJ/.gemini/settings.json"
+    unwrite_cline  "$PROJ/.cline/hooks"
     # A --project --permissive run trusts the path in the GLOBAL codex config,
     # because that is the only place [projects.*] exists. Take just that block
     # back out; leave the rest of the global config alone.
@@ -1082,6 +1303,10 @@ if [ "$PERMISSIVE" -eq 1 ]; then
      codex         $(codex_requirements_reject \
                      && echo "SKIPPED — $CODEX_REQUIREMENTS forbids it" \
                      || echo "approval_policy=never, sandbox_mode=danger-full-access")
+     gemini        $([ "$SCOPE" = "global" ] \
+                     && echo "allow * policy (the --yolo equivalent), guard removed" \
+                     || echo "guard removed only — Gemini has no project-level policy")
+     cline         guard removed (Cline already auto-approves every tool)
 
      Backups go to <file>.bak, which is single-level and is overwritten on the
      next run. Only do this in a container or VM you can throw away.
@@ -1100,12 +1325,16 @@ EOF
     permit_claude "${HOME}/.claude/settings.json"
     permit_codex  "${HOME}/.codex"
     permit_agy    "${HOME}/.gemini/antigravity-cli/settings.json"
+    permit_gemini "$GEMINI_SETTINGS" "$GEMINI_POLICY"
+    permit_cline  "$CLINE_HOME/hooks"
   else
     echo "scope: project ($PROJ), FULLY PERMISSIVE"
     permit_claude "$PROJ/.claude/settings.json"
     claude_trust_note "$PROJ"
     permit_codex  "$PROJ/.codex" "$PROJ"
     permit_agy    "${HOME}/.gemini/antigravity-cli/settings.json" "$PROJ"
+    permit_gemini "$PROJ/.gemini/settings.json"
+    permit_cline  "$PROJ/.cline/hooks"
   fi
 
   echo "allow=everything ask=0 deny=0  guard=none"
@@ -1124,6 +1353,8 @@ if [ "$SCOPE" = "global" ]; then
   write_claude "${HOME}/.claude/settings.json"
   write_codex  "${HOME}/.codex"
   write_agy    "${HOME}/.gemini/antigravity-cli/settings.json"
+  write_gemini "$GEMINI_SETTINGS" "$GEMINI_POLICY"
+  write_cline  "$CLINE_HOME/hooks"
 else
   PROJ=$(cd "${PROJ:-$PWD}" && pwd)
   echo "scope: project ($PROJ)"
@@ -1136,6 +1367,8 @@ else
     note "        removed permissive trust block for $PROJ from ${HOME}/.codex/config.toml"
   fi
   write_agy    "${HOME}/.gemini/antigravity-cli/settings.json" "$PROJ"
+  write_gemini "$PROJ/.gemini/settings.json"
+  write_cline  "$PROJ/.cline/hooks"
 fi
 
 echo "allow=${#ALLOW[@]} ask=${#ASK[@]} deny=${#DENY[@]}  guard=$([ "$DO_HOOK" -eq 1 ] && echo "$GUARD" || echo none)"

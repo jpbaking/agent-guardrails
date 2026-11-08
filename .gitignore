@@ -7,7 +7,7 @@
 .antigravity/
 .agents/
 .goal-ledger/
-.cursor/
+.cline/
 AGENTS.md.local
 
 # Backups this tool creates before every write
