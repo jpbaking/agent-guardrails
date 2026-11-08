@@ -143,14 +143,14 @@ The guard is copied to `~/.agents/hooks/` so the absolute path written into your
 ./agent-guardrails.sh --project         # this repo only
 ./agent-guardrails.sh --project ~/work/api
 ./agent-guardrails.sh --print           # show the JSON, touch nothing
-./agent-guardrails.sh --global --no-hook  # rules only, skip the guard
+./agent-guardrails.sh --global --no-hook  # rules only; also removes a guard installed earlier
 ./agent-guardrails.sh --global --uninstall  # remove everything it added
 ./agent-guardrails.sh --global --permissive # turn the guardrails OFF entirely
 ```
 
 Every write is additive, de-duplicated, idempotent, and backed up to `<file>.bak` first. Your existing rules, hooks, model, and theme survive. Run it twice and nothing changes. (`--permissive` is the one exception — see below.)
 
-An AI coding agent (Claude Code, Codex, agy, Gemini CLI or Cline) can instead follow [AGENT-INSTALL.md](AGENT-INSTALL.md), a merge-aware, survey-before-write procedure that does the same install through the script and reports every collision first.
+An AI coding agent (Claude Code, Codex, agy, Gemini CLI or Cline) can instead follow [AGENT-INSTALL.md](AGENT-INSTALL.md), a merge-aware, survey-before-write procedure that offers the user a choice of mode — fully permissive (its default), guarded allowlist, allowlist only, or preview — runs the script, and reports every collision first.
 
 ### Fully permissive mode
 
