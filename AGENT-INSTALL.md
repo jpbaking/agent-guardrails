@@ -4,9 +4,9 @@ You are an AI coding agent installing **Agent Guardrails**. Follow these steps
 exactly. This procedure is merge-aware: it never blindly overwrites files the
 user already owns, and it reports every collision before anything changes.
 
-Agent Guardrails is a scoped permission allowlist for the three agent CLIs on a
-machine — **Claude Code**, **Codex**, and **agy** (Antigravity CLI) — plus a
-git-push branch guard that refuses to push to protected branches (`main`,
+Agent Guardrails is a scoped permission allowlist for exactly five agent CLIs —
+**Claude Code**, **Codex**, **agy** (Antigravity CLI), **Gemini CLI**, and
+**Cline** — plus a git-push branch guard that asks before any push to a protected branch (`main`,
 `develop`, `release/*`, …). It is the middle path between "ask yes on every
 command" and the all-or-nothing bypass flag that enterprise admins block:
 
@@ -15,7 +15,9 @@ command" and the all-or-nothing bypass flag that enterprise admins block:
 - **ask** (~272 rules) — allowed but always confirmed (reaches off-machine,
   escalates privileges, or destroys uncommitted work).
 - **deny** (~76 rules) — blocked outright (`sudo`, `rm -rf /`, every publish
-  path, credential mutation, pushes to protected branches, …).
+  path, credential mutation, `git push --all`/`--mirror`, …). Pushes to
+  protected branches ask instead — or are blocked on Codex and Cline, which
+  cannot ask.
 
 This document is the agent-guided install path. It **complements, and does not
 replace**, the installer script `agent-guardrails.sh`. The script owns all the
@@ -50,9 +52,11 @@ command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 ## 2. Survey before writing
 
 1. **Confirm which harnesses to support.** Ask the user whether to install for
-   Antigravity CLI, Codex, Claude Code (and any subset). Do **not** infer consent
-   from detected configuration directories — a present `~/.claude` folder means
-   the user has used Claude, not that they want its permissions changed.
+   Claude Code, Codex, agy, Gemini CLI, Cline (or any subset). Do **not** infer
+   consent from detected configuration directories — a present `~/.claude` folder
+   means the user has used Claude, not that they want its permissions changed.
+   No other harness is supported (pi, Cursor, OpenCode, …); if the user asks for
+   one, say so rather than improvising a config for it.
 
 2. **Locate each harness's config and check for collisions.** Read them read-only;
    report anything that would be shadowed, displaced, or duplicated — never delete
@@ -63,6 +67,12 @@ command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
      project scope) the global `~/.codex/config.toml` `[projects.*]` trust entries.
    - **agy** — `~/.gemini/antigravity-cli/settings.json`: `permissions.allow/ask/deny`
      and `trustedWorkspaces`.
+   - **Gemini CLI** — `~/.gemini/settings.json` (or `<proj>/.gemini/settings.json`):
+     `hooks.BeforeTool` and `hooksConfig.enabled`; plus `~/.gemini/policies/`, where
+     any other `*.toml` the user has may outrank or overlap ours.
+   - **Cline** — `~/.cline/hooks/` (or `<proj>/.cline/hooks/`): any existing
+     `PreToolUse.<ext>` file. A `PreToolUse.sh` that is not ours blocks the install
+     there; other extensions coexist, since Cline runs them all.
 
 3. **Note harness-specific gotchas that affect the outcome:**
    - **Claude ignores project rules in an untrusted workspace.** A `--project`
@@ -77,7 +87,14 @@ command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
      `trustedWorkspaces` in agy's *global* settings instead of creating a local one.
    - **agy may not have a config yet.** If `~/.gemini/antigravity-cli/settings.json`
      does not exist (the user has not run agy once), the installer skips it — note
-     this rather than treating it as an error.
+     this rather than treating it as an error. Gemini CLI and Cline are likewise
+     skipped when they are not installed.
+   - **Gemini gets no rules at project scope.** Its workspace policy tier is
+     documented as non-functional, so `--project` installs only the guard into
+     `<proj>/.gemini/settings.json` — and Gemini skips that file in an untrusted
+     folder. The rules need `--global`.
+   - **On Cline the guard is the only gate.** Cline auto-approves every tool by
+     default and has no command allowlist; a guard deny ends the whole run.
 
 4. Report the collisions and gotchas above to the user **before** writing, and let
    them confirm or adjust the scope.
@@ -110,6 +127,10 @@ above). The installer handles the per-harness differences automatically:
   installer adds `[features] hooks = true` to its `config.toml` if missing.
 - **agy** gets the rules translated into its own syntax but **no guard** (its
   hooks have no permission-decision protocol).
+- **Gemini CLI** gets the rules as `~/.gemini/policies/agent-guardrails.toml`
+  (global only) and the guard as a `BeforeTool` hook that can deny and ask.
+- **Cline** gets **only the guard**, deny-only, as `PreToolUse.sh` in its hooks
+  directory.
 
 The push guard is a shared script installed to a stable path outside the repo so
 the absolute path written into the configs keeps working even after the checkout
@@ -127,7 +148,9 @@ the user wants only the allowlist and no branch guard, pass `--no-hook`.
 1. **Confirm each harness picked up what was written.** Re-run `--print` and check
    the JSON: Claude's `permissions.allow/ask/deny` and `hooks.PreToolUse` carry the
    guard; Codex's `hooks.json` carries the deny-only guard and its `config.toml` has
-   `[features] hooks = true`; agy's `permissions.allow/ask/deny` are populated.
+   `[features] hooks = true`; agy's `permissions.allow/ask/deny` are populated;
+   Gemini's `settings.json` has the guard under `hooks.BeforeTool` and (global)
+   its policy file exists; Cline's hooks directory has `PreToolUse.sh`.
 2. **Spot-check a routine command** (e.g. `git status`) actually no longer prompts,
    if convenient — this is optional but catches a silent no-op faster than reading
    JSON.
