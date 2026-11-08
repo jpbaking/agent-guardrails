@@ -164,7 +164,7 @@ The inverse of everything else here: it removes the gate rather than scoping it.
 
 | | permissive mode writes |
 |---|---|
-| **Claude Code** | `defaultMode: "bypassPermissions"`, plus catch-all `Bash(*)`/`Read(*)`/`Write(*)`/… rules so it still holds if a managed policy strips `defaultMode`. `ask` and `deny` set to `[]`. Guard removed. |
+| **Claude Code** | `defaultMode: "bypassPermissions"`, plus catch-all bare-name rules (`Bash`, `Read`, `Edit`, `Write`, …) so it still holds if a managed policy strips `defaultMode`. `ask` and `deny` set to `[]`. Guard removed. |
 | **Codex** | `approval_policy = "never"`, `sandbox_mode = "danger-full-access"` in `config.toml`; `--project` also adds `[projects."<path>"] trust_level = "trusted"` to the global config. Guard removed. |
 | **agy** | `command(*)`, `read_file(*)`, `write_file(*)` in `allow` — the exact inverse of its default, which is to *ask* on `command(*)`. `ask`/`deny` emptied, `allowNonWorkspaceAccess: true`. |
 | **Gemini CLI** | A policy file allowing `toolName = "*"` — the policy form of `--yolo`, which `settings.json` cannot set. Copies Gemini's own `yolo.toml`, including its one exception: `ask_user` still asks, since auto-approving it would answer a question meant for you. Guard removed. **Global only** — see below. |
@@ -219,9 +219,11 @@ Permissive mode still works — **as long as the workspace is trusted.** Managed
 | project settings | `defaultMode` | command ran? |
 |---|---|---|
 | no rules | — | no (control) |
-| `Bash(*)`, `Read(*)`, `Edit(*)`, `Write(*)` | **absent** | **yes** — catch-alls alone suffice |
+| `Bash(*)`, `Read(*)`, `Edit(*)`, `Write(*)` ¹ | **absent** | **yes** — catch-alls alone suffice |
 | `Bash(touch:*)` | absent | yes (positive control, documented syntax) |
 | no rules | `bypassPermissions` | yes |
+
+¹ The spelling at the time of this test. The script now writes bare tool names (`Bash`, `Read`, …): newer Claude Code reads `Read(*)`, `Edit(*)` and `Write(*)` as covering only the working directories, and warns that they add nothing.
 
 Trust is the catch, and it cuts differently for each half:
 

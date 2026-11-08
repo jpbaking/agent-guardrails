@@ -557,6 +557,11 @@ DENY=(
 # new install adds it to allow, and it ends up in BOTH — where ask wins and the
 # allow rule silently does nothing. Purge-then-merge lands it in allow alone.
 RETIRED=(
+  # Old PERMIT_ALLOW spellings, replaced by bare tool names. Claude Code
+  # started reading "Tool(*)" as working-directories-only for file tools.
+  "Bash(*)" "Read(*)" "Edit(*)" "Write(*)" "Glob(*)" "Grep(*)"
+  "WebFetch(*)" "WebSearch(*)" "NotebookEdit(*)" "Task(*)"
+
   # No longer shipped in any list.
   # v1 had these three; superseded by "Bash(go *)" when Go was filled out.
   "Bash(go build *)" "Bash(go test *)" "Bash(go vet *)"
@@ -578,9 +583,16 @@ RETIRED=(
 # skips rule evaluation wholesale. The catch-all rules below are belt and braces
 # for the case where an enterprise managed-settings policy refuses defaultMode:
 # the rules still stand on their own if the mode is stripped.
+#
+# Bare tool names, not "Tool(*)": Claude Code now reads "Read(*)", "Edit(*)",
+# "Write(*)" etc. as "any path inside the working directories" and warns at
+# startup that they add nothing. A bare name is the documented "every use of
+# this tool, any path" form. The old spellings live in RETIRED.
+# "Agent" is the subagent tool's current name; "Task" is kept for older
+# versions that still use it.
 PERMIT_ALLOW=(
-  "Bash(*)" "Read(*)" "Edit(*)" "Write(*)" "Glob(*)" "Grep(*)"
-  "WebFetch(*)" "WebSearch(*)" "NotebookEdit(*)" "Task(*)"
+  "Bash" "Read" "Edit" "Write" "Glob" "Grep"
+  "WebFetch" "WebSearch" "NotebookEdit" "Task" "Agent"
 )
 
 # agy's own syntax. Its documented default is to ASK on command(*) — every shell
@@ -1337,7 +1349,7 @@ if [ "$PERMISSIVE" -eq 1 ]; then
   ⚠  FULLY PERMISSIVE — this REMOVES the guardrails, it does not scope them.
 
      target        $([ "$SCOPE" = "global" ] && echo "every project on this machine (global)" || echo "$PROJ")
-     allow         everything: Bash(*), Read(*), Write(*), Edit(*), …
+     allow         everything: Bash, Read, Write, Edit, … (bare tool names)
      ask / deny    cleared to empty, including any rules you added yourself
      push guard    removed — force-pushing to main is no longer stopped
      codex         $(codex_requirements_reject \

@@ -268,7 +268,7 @@ Uninstall subtracts from the same `ALLOW`/`ASK`/`DENY` arrays the writers use, s
 ./agent-guardrails.sh --project /tmp/sb                      # normal install over permissive
 ```
 
-Confirm: the `config.toml` block does not stack and no blank line accumulates per run; the displaced top-level key comes back with its original value on uninstall while the one **inside the table** was never touched; the foreign hook survives all of it; and after the normal install there is no `defaultMode`, no `Bash(*)`, no policy block, and no `[projects."<path>"]` trust entry left. That last one matters most — rules under a bypass switch are rules that do nothing.
+Confirm: the `config.toml` block does not stack and no blank line accumulates per run; the displaced top-level key comes back with its original value on uninstall while the one **inside the table** was never touched; the foreign hook survives all of it; and after the normal install there is no `defaultMode`, no bare `Bash` (or legacy `Bash(*)`), no policy block, and no `[projects."<path>"]` trust entry left. That last one matters most — rules under a bypass switch are rules that do nothing.
 
 Two invariants the permissive path depends on. `TRUST_BEGIN` must **not** start with `TOML_BEGIN`, or reinstalling the policy block sweeps away trust blocks other projects put in the same global config. And `toml_filter`'s restore flag must be `0` whenever the policy block is staying put — un-commenting a displaced `approval_policy` while ours is still in the file produces a duplicate key, which is a TOML parse error, which is a Codex that will not start.
 
@@ -300,7 +300,7 @@ Ask where the damage lands, then pick the shape:
 | publishes an artifact or mutates credentials (`npm publish`, `gh secret`, `docker push`) | `deny` — an agent should not be able to do this at all |
 | fetches and executes remote code (`npx`, `gh extension install`, `cargo install`) | `ask` |
 
-Two hard rules. **Do not add `Bash(git push *)` to `ALLOW`** — that defeats the guard, which is the entire point of the project. And **do not add a bare shell** (`Bash(bash *)`, `Bash(sh *)`): `bash -c '<anything>'` makes every other rule in the file meaningless. Both of those live in `PERMIT_ALLOW` by way of `Bash(*)`, which is exactly why `--permissive` is a separate mode with a confirmation rather than a looser default.
+Two hard rules. **Do not add `Bash(git push *)` to `ALLOW`** — that defeats the guard, which is the entire point of the project. And **do not add a bare shell** (`Bash(bash *)`, `Bash(sh *)`): `bash -c '<anything>'` makes every other rule in the file meaningless. Both of those live in `PERMIT_ALLOW` by way of bare `Bash`, which is exactly why `--permissive` is a separate mode with a confirmation rather than a looser default.
 
 When you add a toolchain, update the README's allow/ask/deny tables and every rule count, regenerate both generated files in `enterprise/`, and run the shadow checker.
 

@@ -209,7 +209,7 @@ $AGENT_GUARDRAILS_DIR/git-push-guard.sh     # default: ~/.agents/hooks/
 
    | | mode 1 | mode 2 | mode 3 |
    |---|---|---|---|
-   | Claude | `defaultMode: bypassPermissions`, `Bash(*)` etc. in allow, ask/deny `[]`, no `git-push-guard` hook | rules in allow/ask/deny, guard in `hooks.PreToolUse` | rules, no guard |
+   | Claude | `defaultMode: bypassPermissions`, bare `Bash`, `Read`, … in allow, ask/deny `[]`, no `git-push-guard` hook | rules in allow/ask/deny, guard in `hooks.PreToolUse` | rules, no guard |
    | Codex | `config.toml` block with `approval_policy = "never"`, `sandbox_mode = "danger-full-access"`, no guard in `hooks.json` | guard (`--deny-only`) in `hooks.json`, `[features] hooks = true` | no guard |
    | agy | `command(*)`, `read_file(*)`, `write_file(*)` in allow, ask/deny `[]` | rules | rules |
    | Gemini | `policies/agent-guardrails.toml` allows `"*"`, no guard (global) | policy file with rules (global), guard in `hooks.BeforeTool` | policy file, no guard |
