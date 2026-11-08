@@ -8,16 +8,16 @@ Two shell scripts and some policy templates.
 
 ```
 agent-guardrails.sh              entry point — rule lists, translation, writers, removers
-hooks/git-push-guard.sh          the pre-tool hook, shared by Claude, Codex, Gemini CLI and Cline
+hooks/git-push-guard.sh          the pre-tool hook, shared by Claude, Codex, Gemini CLI, Cline and OpenCode
 enterprise/                      drop-in policy files for admins (partly generated, see below)
 .guardrails-protected            this repo's own branch exemption (!main)
 ```
 
-Exactly five harnesses are supported: Claude Code, Codex, agy, Gemini CLI and Cline. Do not add a sixth casually — every harness here earned its place by having its gating mechanism read out of the shipped binary or source (see below), and a half-understood one is worse than none.
+Exactly six harnesses are supported: Claude Code, Codex, agy, Gemini CLI, Cline and OpenCode (2.x). Do not add a seventh casually — every harness here earned its place by having its gating mechanism read out of the shipped binary or source (see below), and a half-understood one is worse than none.
 
-`agent-guardrails.sh` holds the rule lists (`ALLOW`, `ASK`, `DENY`) as bash arrays near the top, two translators (`to_agy`, and `gemini_toml`, which emits a whole policy file), five writers (`write_claude`, `write_codex`, `write_agy`, `write_gemini`, `write_cline`), five removers (`unwrite_*`) behind `--uninstall`, and five `permit_*` functions behind `--permissive`. The guard is a standalone script that reads hook JSON on stdin and writes a decision to stdout, in one of four output protocols selected by a flag.
+`agent-guardrails.sh` holds the rule lists (`ALLOW`, `ASK`, `DENY`) as bash arrays near the top, three translators (`to_agy`; `gemini_toml`, which emits a whole policy file; and `oc_rules`, which emits OpenCode rule objects), six writers (`write_claude`, `write_codex`, `write_agy`, `write_gemini`, `write_cline`, `write_opencode`), six removers (`unwrite_*`) behind `--uninstall`, and six `permit_*` functions behind `--permissive`. The guard is a standalone script that reads hook JSON on stdin and writes a decision to stdout, in one of four output protocols selected by a flag. OpenCode has no command hooks, so `opencode_plugin` generates a small JS plugin that calls the guard in the default (Claude) protocol.
 
-Gemini and Cline are the two whose files the script **owns** rather than merges into: `~/.gemini/policies/agent-guardrails.toml` and `PreToolUse.sh` in Cline's hooks directory. Both are rewritten whole on install and deleted on uninstall, and both carry `OWNED_MARK` — `owned_write` and `owned_remove` refuse to touch a same-named file without it. Keep that check; it is what stops the installer from deleting a user's own hook.
+Gemini, Cline and OpenCode are the three whose files the script **owns** rather than merges into: `~/.gemini/policies/agent-guardrails.toml`, `PreToolUse.sh` in Cline's hooks directory, and `plugins/agent-guardrails.js` in OpenCode's config directory. All are rewritten whole on install and deleted on uninstall, and all carry `OWNED_MARK` — `owned_write` and `owned_remove` refuse to touch a same-named file without it. Keep that check; it is what stops the installer from deleting a user's own hook.
 
 `enterprise/claude-managed-settings.json` and `enterprise/gemini-policy.toml` are **generated** — regenerate both in the same PR as any rule change, or they silently drift from the script:
 
@@ -34,7 +34,7 @@ The README quotes rule counts in many places — the intro, the sample output bl
 
 **Never widen the allowlist casually.** A rule earns `allow` only if it is local, reversible, doesn't publish anything outward, and doesn't escalate privilege. When unsure, `ask` is the right answer — prompt fatigue is a worse outcome than a data breach, but only slightly.
 
-**Don't claim a capability you haven't verified in the binary.** The five harnesses differ in ways that are not documented anywhere. See below.
+**Don't claim a capability you haven't verified in the binary.** The six harnesses differ in ways that are not documented anywhere. See below.
 
 ## Rule ordering — the thing that will bite you
 
@@ -107,6 +107,16 @@ The consequence shapes the design: writing a value that will be clamped is worse
 
 **Cline** (3.x CLI, `@cline/core`) — no per-command matching at all. Its gate is per tool (`toolPolicies`, `--auto-approve`, default **true**). Hooks are *files* named after the event — `PreToolUse`, `PreToolUse.sh`, `PreToolUse.py`, … — in `~/Documents/Cline/Hooks`, `~/.cline/hooks`, `<ws>/.clinerules/hooks` and `<ws>/.cline/hooks`; all of them run, each through the interpreter its extension names (`.sh` → `bash`). The payload has no `tool_input`: the call is `tool_call: {id, name, input}`, the shell tool is `run_commands`, and its input is `{commands: [...]}` whose entries are strings or `{command, args}`. There is no `cwd`; use `workspaceRoots[0]`. The output is `{"cancel": true, "errorMessage": …}`, which becomes a stop control that **ends the run**; `review` is parsed and then never read, so there is no ask. The editor tool also has a field called `command`, which is why the guard filters on `tool_call.name == "run_commands"`.
 
+**OpenCode** (2.x, `@opencode/cli`; the npm `opencode-ai` 1.x line was not examined and is not supported) — one ordered list of `{action, resource, effect}` rules, **last match wins** (`evaluate` is a `findLast` in `packages/core/src/permission.ts`). Unmatched means ask, any `deny` across a command's segments wins first, then any `ask`. The list is: agent defaults (the `build` agent opens with `* * allow`), then each config file in load order (global → `<proj>/opencode.json` → `<proj>/.opencode/` → managed `/etc/opencode/` last), and within a file `tools` → legacy `permission` object (key order is policy: OpenCode decodes it with `Object.entries`) → native `permissions` array. The shell action is `shell`; the legacy key `bash` is rewritten to it. `Wildcard.match` turns `*` into `.*`, `?` into `.`, and a trailing ` *` into `( .*)?` — Claude's word boundary exactly, and `*` crosses `/`. Things that will bite:
+
+- **Order is the precedence.** `oc_ours` emits allow, then ask, then deny; that is what reproduces Claude's deny > ask > allow. Never sort, dedupe with `unique`, or append rules after the deny block — any of those changes what wins. Dedupe is subtract-then-append (`drop_ours`), which keeps the order.
+- **The catch-all must be first, and it lives in the user's object.** Without `"*": "ask"` every unlisted command inherits the default allow and the allowlist is a no-op. In the `permissions` array it would come after the user's own `permission` rules and shadow their allows, so it is prepended to `permission.bash` (or `.shell`, if that is the spelling in use) instead. A user's own `"*"` is never replaced.
+- **Read resources are relative inside the project, absolute outside it** (`file-access.ts`). That is why a `**/` Read rule is emitted in two forms.
+- **No command hooks — plugins.** `*.js` / `*.ts` in a config directory's `plugin/` or `plugins/` auto-load; a plain `export default {id, setup}` module works. `ctx.shell.hook("create.before")` fires with `{command, cwd}` before `ctx.permission.hook("evaluate")`, which gets `{action, resources, effect, message}` and may set `effect` to allow, ask or deny. `resources` are the command's segments, verbatim. A config deny returns *before* the hook runs. The hook gets one verdict for the whole call, so the plugin may only **raise** it, except to allow a call made up entirely of pushes the guard approved. Do not widen that: an allow covers every segment, `rm -rf` included.
+- **`--auto` / `--yolo` / `--dangerously-skip-permissions` are client-side.** The CLI answers "once" to every ask (`packages/cli/src/run/noninteractive.ts`). The plugin cannot see this, so under `--auto` the guard's asks pass — only denies hold. Unattended schedule runs are different: there an unresolved ask becomes a deny.
+- **No trust gate** for project config or plugins, unlike Claude, Codex and Gemini.
+- **`OPENCODE_CONFIG_DIR` replaces the global config directory** (`packages/cli/src/index.ts`), so `OC_GLOBAL` honours it.
+
 **Claude Code** — the permissive one. Full `allow`/`ask`/`deny` from a `PreToolUse` hook via `hookSpecificOutput`, matcher `Bash`, `tool_input.command` is a string.
 
 **Claude discards project-level rules in an untrusted workspace**, printing `Ignoring N permissions.allow entries from .claude/settings.json: this workspace has not been trusted`. Trust does not inherit from a parent directory, and `permissions.defaultMode` is *not* subject to it — only the rules are. Both harnesses therefore gate project-scoped config on trust (see the Codex note above), by different mechanisms and with different escape hatches. `--project` warns and stops there: writing `hasTrustDialogAccepted` into `~/.claude.json` would suppress a security prompt on the user's behalf. Do not "fix" the warning by making it automatic.
@@ -133,7 +143,18 @@ grep -l 'isAskDecision' "$GB"/*.js                             # which hook deci
 CN=$(dirname "$(readlink -f "$(command -v cline)")")/../node_modules/@cline
 grep -o 'cancel:es.boolean[^;]*' "$CN/core/dist/index.js"      # hook output schema
 grep -o 'RUN_COMMANDS:"[a-z_]*"' "$CN/core/dist/index.js"      # shell tool name
+
+# OpenCode is a compiled binary; read the source at the matching tag instead.
+V=$(opencode --version | sed 's/^opencode v//')
+git clone -q --depth 1 --branch "v$V" https://github.com/sst/opencode.git /tmp/oc
+grep -n -A10 'export function evaluate' /tmp/oc/packages/core/src/permission.ts   # last match wins
+cat /tmp/oc/packages/core/src/util/wildcard.ts                                    # pattern syntax
+grep -n 'permissions = \[' /tmp/oc/packages/core/src/config/normalize.ts          # tools, permission, permissions
+cat /tmp/oc/packages/plugin/src/promise/permission.ts /tmp/oc/packages/plugin/src/promise/shell.ts  # hook shapes
+grep -n 'decision:' /tmp/oc/packages/cli/src/run/noninteractive.ts                # how --auto answers asks
 ```
+
+OpenCode has a doctor of its own: `opencode --standalone debug agents` prints each agent's fully resolved ruleset, defaults and every config file included, and `debug config` lists the sources it loaded. Point `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` (or `HOME`) at a sandbox, and always pass `--standalone`: without it the CLI talks to the background service, which holds your real config.
 
 Gemini's policy engine can be exercised without a model or a live config: import `loadPoliciesFromToml` and `PolicyEngine` from the bundle chunk that defines them, load the generated file plus `$GB/policies` (the built-in defaults, tier 1), and call `engine.check({name: "run_shell_command", args: {command}})`. Do it in every approval mode — `default`, `plan`, `yolo` — since `modes` is where a mistake hides. That checks rule matching, not the hook, and not what a live session does with the result.
 
@@ -235,6 +256,14 @@ lt "git push --force origin feature/x" run_commands  # pass (no output) — Clin
 lt "git push origin main" editor                     # pass (no output) — not the shell tool
 ```
 
+OpenCode — the plugin, not the script, is the thing to test, since it maps one verdict per segment onto one verdict per call. The guard table above covers what each segment gets. The mapping needs a live run (see "Testing what an agent will actually execute"): install into a scratch `HOME` with a bare repo as `origin`, then use `opencode run --standalone` with a bare prompt. A non-interactive run auto-rejects every ask, so a remote ref that moved means the call was allowed. Each of these needs its control with `plugins/agent-guardrails.js` moved aside, or it proves nothing — the `"*": "ask"` catch-all holds `git push` on its own:
+
+| run | with plugin | control, no plugin |
+|---|---|---|
+| `git push origin feature/x` | pushed | asked, not pushed |
+| `git commit … && git push origin feature/x` | asked | asked |
+| `git push origin feature/x:main`, plus a project rule allowing `git push *` | asked | **pushed** |
+
 **3. The writers, against copies — never your live config.**
 
 ```bash
@@ -246,6 +275,15 @@ HOME=/tmp/sb AGENT_GUARDRAILS_DIR=/tmp/sb/agents ./agent-guardrails.sh --global
 ```
 
 For Gemini and Cline, also seed a foreign `BeforeTool` hook in `.gemini/settings.json` and a foreign `PreToolUse.py` in `.cline/hooks/` — both must survive install and uninstall — and a hand-written `PreToolUse.sh` / `policies/agent-guardrails.toml` without the marker, which the installer must refuse to overwrite and uninstall must refuse to delete.
+
+For OpenCode (`.config/opencode/` under the scratch `HOME`, or `OPENCODE_CONFIG_DIR`), seed a `permission.bash` of your own, a `permissions` entry of your own and a foreign plugin in `plugins/`. Then confirm:
+- the catch-all lands **first** in `permission.bash`, with your keys after it in their original order;
+- your `permissions` entry stays ahead of ours;
+- uninstall restores the file exactly, key order included;
+- a hand-written `plugins/agent-guardrails.js` is neither overwritten nor deleted;
+- an `opencode.jsonc` with comments is left byte-identical.
+
+Then check rule behaviour against what OpenCode itself resolves. `opencode --standalone debug agents` gives the `build` agent's full list. Run test commands through `Wildcard.match` copied verbatim from the source, plus the five-line `evaluate`, deny-first and any-ask logic from `permission.ts`. That is the OpenCode equivalent of the Gemini `PolicyEngine` check.
 
 Confirm, on the result: existing keys survive (`model`, `theme`, other hooks), counts are what you expect, a second run changes nothing, and the file still parses (`jq -e .`, or `python3 -c 'import tomllib…'` for TOML).
 

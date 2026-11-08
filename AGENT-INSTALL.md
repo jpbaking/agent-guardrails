@@ -4,9 +4,9 @@ You are an AI coding agent installing **Agent Guardrails**. Follow these steps
 exactly. This procedure is merge-aware: it never blindly overwrites files the
 user already owns, and it reports every collision before anything changes.
 
-Agent Guardrails configures the permission gates of exactly five agent CLIs —
-**Claude Code**, **Codex**, **agy** (Antigravity CLI), **Gemini CLI**, and
-**Cline**. It offers three install modes, from no gate at all to a scoped
+Agent Guardrails configures the permission gates of exactly six agent CLIs —
+**Claude Code**, **Codex**, **agy** (Antigravity CLI), **Gemini CLI**,
+**Cline**, and **OpenCode** (2.x). It offers three install modes, from no gate at all to a scoped
 allowlist with a git-push branch guard. **Fully permissive is the default**; the
 user picks in step 2.
 
@@ -83,10 +83,10 @@ Reply with a mode and scope (e.g. "1a"), or just "go" for the defaults: 1a.
 Things to know when the user asks, or picks something that has a catch:
 
 - **There is no per-CLI selection.** The script configures every supported CLI it
-  finds (Gemini CLI and Cline are skipped when not installed; agy when it has no
-  settings file yet). If the user wants to leave one out, say so plainly before
+  finds (Gemini CLI, Cline and OpenCode are skipped when not installed; agy when
+  it has no settings file yet). If the user wants to leave one out, say so plainly before
   running — do not hand-edit around it.
-- **No other harness is supported** (pi, Cursor, OpenCode, …). If the user asks
+- **No other harness is supported** (pi, Cursor, OpenCode 1.x, …). If the user asks
   for one, say so rather than improvising a config for it.
 - **Mode 1 is the opposite of a guardrail**, by design: it is meant for a
   container, a VM, or a machine where the user has decided speed beats a prompt.
@@ -118,6 +118,12 @@ Where each CLI keeps what the script touches:
 - **Cline** — `~/.cline/hooks/` (or `<proj>/.cline/hooks/`): any existing
   `PreToolUse.<ext>`. A `PreToolUse.sh` that is not ours blocks the install there;
   other extensions coexist, since Cline runs them all.
+- **OpenCode** — `~/.config/opencode/` (or `$OPENCODE_CONFIG_DIR`; for project
+  scope `<proj>/.opencode/`): `opencode.json` — its `permission` object and
+  `permissions` array — and `plugins/`. An `agent-guardrails.js` there that is not
+  ours blocks the guard install; an `opencode.jsonc` with comments blocks the
+  rules (jq cannot keep comments). A `"*"` of the user's own in `permission.bash`
+  is kept and decides every unlisted command.
 
 ### If mode 1 (fully permissive)
 
@@ -150,6 +156,9 @@ file somewhere safe first. Also report:
   permissive project the user passes `--yolo` to `gemini` themselves. Even
   globally, Gemini's "ask the user a question" tool still asks, and Gemini still
   asks in a few cases it flags itself.
+- **OpenCode** — permissive appends one `"*" "*" allow` rule last, which
+  overrides the user's own rules without deleting them, and removes the guard
+  plugin and the catch-all.
 - **Claude, project scope** — the allow-everything rules are ignored until the
   workspace is trusted, but `defaultMode: bypassPermissions` applies regardless.
 - **Codex, project scope** — the script also writes a `trust_level = "trusted"`
@@ -172,9 +181,16 @@ Report anything the rules would shadow, displace, or duplicate, and these:
   folder. The rules need `--global`.
 - **Codex and Cline get no rules in any mode** — neither has a per-command
   allowlist. In mode 2 they get the guard only; in mode 3, nothing.
+- **OpenCode changes default (modes 2 and 3).** Out of the box OpenCode runs
+  every command unprompted; the install adds a `"*": "ask"` catch-all, so
+  unlisted commands start prompting, as on Claude. Our rules also override any
+  of the user's own rules on the same commands (OpenCode is last-match-wins).
+  Say both before writing.
 - **What the guard does per CLI (mode 2).** A protected-branch push *asks* on
-  Claude and Gemini but is *blocked* on Codex and Cline, which cannot ask; on
-  Cline a block ends the whole run. agy gets no guard. `git push --all` /
+  Claude, Gemini and OpenCode but is *blocked* on Codex and Cline, which cannot
+  ask; on Cline a block ends the whole run. On OpenCode an approved
+  feature-branch push still asks when other commands share the call, and
+  `opencode --auto` answers the guard's asks itself. agy gets no guard. `git push --all` /
   `--mirror` are blocked everywhere.
 - **A previous permissive install is undone automatically.** Installing mode 2 or
   3 over mode 1 strips `bypassPermissions`, the allow-everything rules, the Codex
@@ -214,6 +230,7 @@ $AGENT_GUARDRAILS_DIR/git-push-guard.sh     # default: ~/.agents/hooks/
    | agy | `command(*)`, `read_file(*)`, `write_file(*)` in allow, ask/deny `[]` | rules | rules |
    | Gemini | `policies/agent-guardrails.toml` allows `"*"`, no guard (global) | policy file with rules (global), guard in `hooks.BeforeTool` | policy file, no guard |
    | Cline | no `PreToolUse.sh` of ours | `PreToolUse.sh` present | none of ours |
+   | OpenCode | `"*" "*" allow` last in `permissions`, no plugin | rules in `permissions`, `"*": "ask"` first in `permission.bash`, `plugins/agent-guardrails.js` | rules and catch-all, no plugin |
 
    Every JSON file must still parse (`jq -e .`), and `config.toml` too
    (`python3 -c 'import tomllib,sys; tomllib.load(open(sys.argv[1],"rb"))' <file>`).
@@ -226,6 +243,9 @@ $AGENT_GUARDRAILS_DIR/git-push-guard.sh     # default: ~/.agents/hooks/
 4. **Tell the user:**
    - **Restart running sessions.** Claude Code does not reload hooks mid-session
      (opening `/hooks` reloads them); the other CLIs read config at startup.
+     OpenCode runs a background service: `opencode service restart` picks up
+     the new config and plugin (`opencode reload` may, but is not verified to
+     reload plugins).
    - **How to undo or switch.** `<guardrails>/agent-guardrails.sh --global
      --uninstall` (or `--project <path> --uninstall`) subtracts exactly what the
      script added, in any mode — including restoring Codex keys that permissive

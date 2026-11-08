@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# git-push-guard.sh — shared pre-tool hook for Claude Code, Codex CLI, Gemini CLI
-# and Cline. (agy is the fifth supported CLI; its hooks cannot gate a tool call,
-# so it gets no guard.)
+# git-push-guard.sh — shared pre-tool hook for Claude Code, Codex CLI, Gemini CLI,
+# Cline and OpenCode. (agy is the sixth supported CLI; its hooks cannot gate a
+# tool call, so it gets no guard.) OpenCode has no command hooks, only JS
+# plugins: the plugin agent-guardrails.sh writes calls this script once per
+# command segment in the Claude protocol below and maps the answer itself.
 #
 # Auto-approves `git push` to ordinary feature branches, and ASKS before a push
 # to (or a delete of) a protected / "parent" branch (main, develop, release/*, ...).
@@ -31,7 +33,8 @@
 # deny: on Cline the host's own flow auto-approves everything, so passing it
 # through would push to main with no prompt at all.
 #
-#   (none)        Claude Code. hookSpecificOutput.permissionDecision, all three.
+#   (none)        Claude Code, and OpenCode's plugin. hookSpecificOutput.
+#                 permissionDecision, all three.
 #   --deny-only   Codex. Same JSON, deny ONLY — its hook engine rejects "allow"
 #                 and "ask" ("PreToolUse hook returned unsupported
 #                 permissionDecision:allow"), and a deny needs a non-empty

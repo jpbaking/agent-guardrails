@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# agent-guardrails — one scoped permissions allowlist for the five supported
-# agent CLIs (Claude Code, Codex, agy, Gemini CLI, Cline), plus the git-push
-# branch guard. No other harness is supported.
+# agent-guardrails — one scoped permissions allowlist for the six supported
+# agent CLIs (Claude Code, Codex, agy, Gemini CLI, Cline, OpenCode), plus the
+# git-push branch guard. No other harness is supported.
 #
 #   ./agent-guardrails.sh --global            # user-level, every harness
 #   ./agent-guardrails.sh --project [PATH]    # project/workspace-level (default: cwd)
@@ -31,6 +31,10 @@
 #             + guard in ~/.gemini/settings.json
 #   project   guard in <p>/.gemini/settings.json only  <p>/.cline/hooks/PreToolUse.sh
 #
+#   scope     OpenCode
+#   global    ~/.config/opencode/opencode.json + plugins/agent-guardrails.js
+#   project   <p>/.opencode/opencode.json      + plugins/agent-guardrails.js
+#
 # Capability differences, handled automatically:
 #   - Codex has no allowlist at all (approval_policy x sandbox_mode x trust_level
 #     instead), and its PreToolUse hooks may only return "deny" — so it gets the
@@ -43,6 +47,9 @@
 #     work, so project scope installs the guard but no rules.
 #   - Cline has no per-command allowlist (it auto-approves every tool by
 #     default), so it gets the guard only, deny-only, as a PreToolUse hook file.
+#   - OpenCode allows every command by default and is last-match-wins, so it
+#     gets the rules in allow/ask/deny order plus a "*": "ask" catch-all, and
+#     the guard as a plugin file. It needs no workspace trust.
 #   - Under --permissive, Codex is the one that actually needs config.toml
 #     rewritten (approval_policy/sandbox_mode), since it has no rules to widen.
 #
@@ -1243,6 +1250,253 @@ permit_cline() { # $1 = hooks directory
   note "cline   nothing else to change — Cline auto-approves every tool by default"
 }
 
+# ── OpenCode ──────────────────────────────────────────────────────────────────
+# OpenCode (2.x) evaluates one ordered rule list, LAST MATCH WINS, built as:
+# its agent defaults (which open with "* * allow" — every tool, every command),
+# then each config file in load order — global, then <project>/opencode.json,
+# then <project>/.opencode/ — and within a file the legacy `permission` object
+# before the native `permissions` array. So:
+#   - our rules go in the `permissions` array, allow then ask then deny, which
+#     reproduces Claude's deny > ask > allow and lands after the user's own
+#     `permission` object in the same file;
+#   - unlisted commands would otherwise inherit "* * allow", so a "*": "ask"
+#     catch-all is PREPENDED to permission.bash — first, so it overrides the
+#     defaults without shadowing allows the user wrote after it. A "*" of the
+#     user's own is left exactly as it is.
+# Pattern syntax is Claude's already: "git status *" matches "git status" and
+# "git status -s" but not "git statusx", and a compound command is split and
+# every part checked. `?` is a one-character wildcard; no rule here uses one.
+# OPENCODE_CONFIG_DIR replaces the global config directory outright (the CLI
+# passes it straight through as Global.config), so honour it the same way.
+OC_GLOBAL="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}"
+OC_PLUGIN="plugins/agent-guardrails.js"
+OC_PERMIT='[{"action":"*","resource":"*","effect":"allow"}]'
+
+have_opencode() {
+  [ -d "$OC_GLOBAL" ] || command -v opencode >/dev/null 2>&1 || [ -x "$HOME/.opencode/bin/opencode" ]
+}
+
+# Claude rules -> OpenCode rule objects, in input order.
+#   Bash(git status *)        -> {action:"shell", resource:"git status *"}
+#   Read(//home/**/.ssh/**)   -> {action:"read",  resource:"/home/*/.ssh/*"}
+#   Read(//**/.env.production)-> "*/.env.production" and ".env.production"
+# OpenCode's `*` already crosses "/", so ** collapses to *. A file inside the
+# project is matched by its project-relative path, one outside it by its
+# absolute path — hence the two forms for a "**/" prefix.
+oc_rules() { # $1 = effect, rest = Claude rules
+  local eff=$1; shift
+  [ $# -gt 0 ] || { echo '[]'; return; }
+  arr "$@" | jq -c --arg e "$eff" '[ .[]
+    | capture("^(?<k>[A-Za-z]+)\\((?<v>.*)\\)$")?
+    | if .k == "Bash" then {action: "shell", resource: .v, effect: $e}
+      elif .k == "Read" then (.v[1:] | gsub("\\*\\*"; "*")) as $p
+        | if ($p | startswith("/*/"))
+          then {action: "read", resource: ("*/" + $p[3:]), effect: $e},
+               {action: "read", resource: $p[3:], effect: $e}
+          else {action: "read", resource: $p, effect: $e} end
+      else empty end ]'
+}
+oc_ours() {
+  jq -cn --argjson a "$(oc_rules allow "${ALLOW[@]}")" \
+         --argjson k "$(oc_rules ask "${ASK[@]}")" \
+         --argjson d "$(oc_rules deny "${DENY[@]}")" '$a + $k + $d'
+}
+# Everything any version of this script may have written to `permissions`:
+# the live lists, the retired ones under every effect, and the permissive rule.
+oc_known() {
+  jq -cn --argjson o "$(oc_ours)" --argjson p "$OC_PERMIT" \
+         --argjson r1 "$(oc_rules allow "${RETIRED[@]}")" \
+         --argjson r2 "$(oc_rules ask "${RETIRED[@]}")" \
+         --argjson r3 "$(oc_rules deny "${RETIRED[@]}")" '$o + $p + $r1 + $r2 + $r3'
+}
+
+# The catch-all lives in the user's own `permission` object, so it is managed
+# by key rather than by array subtraction. "shell" is the 2.x spelling of the
+# legacy "bash" key; use it only when the user already does.
+OC_JQ_DEFS='
+  def oc_key: if (.permission.shell | type) == "object" and .permission.bash == null
+              then "shell" else "bash" end;
+  def add_catchall:
+    if .permission == null then .permission = {bash: {"*": "ask"}}
+    elif (.permission | type) != "object" then .
+    else oc_key as $k
+      | if .permission[$k] == null then .permission[$k] = {"*": "ask"}
+        elif (.permission[$k] | type) != "object" or (.permission[$k] | has("*")) then .
+        else .permission[$k] = ({"*": "ask"} + .permission[$k]) end
+    end;
+  def drop_catchall:
+    if (.permission | type) == "object" then
+      reduce ("bash", "shell") as $k (.;
+        if (.permission[$k] | type) == "object" and .permission[$k]["*"] == "ask"
+        then .permission[$k] |= del(.["*"])
+             | if .permission[$k] == {} then .permission |= del(.[$k]) else . end
+        else . end)
+      | if .permission == {} then del(.permission) else . end
+    else . end;
+  def drop_ours($known):
+    if .permissions then .permissions -= $known
+      | if .permissions == [] then del(.permissions) else . end
+    else . end;'
+
+# OpenCode reads opencode.json and opencode.jsonc. JSONC with comments cannot
+# go through jq without losing them, so such a file is skipped, never rewritten.
+oc_config() { # $1 = config dir; prints the file to edit, or fails
+  if [ -f "$1/opencode.json" ]; then echo "$1/opencode.json"
+  elif [ -f "$1/opencode.jsonc" ]; then
+    jq -e . "$1/opencode.jsonc" >/dev/null 2>&1 || return 1
+    echo "$1/opencode.jsonc"
+  else echo "$1/opencode.json"; fi
+}
+
+# The guard as an OpenCode plugin. OpenCode auto-loads every *.js in a config
+# directory's plugins/, so — like Cline's hook — this is a file the script owns.
+# create.before sees the real command and cwd; permission.evaluate decides.
+# The guard is called once per command segment, in Claude's protocol, and:
+#   deny / ask  -> applied, with the guard's reason shown in the prompt
+#   allow       -> applied ONLY when every segment is a push the guard approved,
+#                  so `git push && rm -rf x` cannot ride along on the allow
+#   guard fails -> ask, never allow
+# A rule-level deny never reaches the hook, and the hook never lowers one.
+opencode_plugin() {
+  local g
+  g=$(jq -rn --arg g "$GUARD" '$g | tojson')
+  cat <<EOF
+// $OWNED_MARK by agent-guardrails.sh — --uninstall deletes this file.
+// OpenCode plugin: runs the git-push guard on every shell permission check.
+// Do not edit: re-run the installer.
+import { execFile } from "node:child_process"
+import path from "node:path"
+
+const GUARD = $g
+const RANK = { allow: 1, ask: 2, deny: 3 }
+const PUSH = /\\bpush\\b/
+
+const judge = (command, cwd) =>
+  new Promise((resolve) => {
+    const confirm = (why) => resolve({ d: "ask", why: \`git-push-guard \${why} — confirm this push yourself.\` })
+    const child = execFile("bash", [GUARD], { cwd, timeout: 10000 }, (err, stdout) => {
+      if (err) return confirm(\`failed (\${err.message})\`)
+      const out = stdout.trim()
+      if (!out) return resolve(null)
+      try {
+        const h = JSON.parse(out).hookSpecificOutput
+        if (!RANK[h.permissionDecision]) return confirm("returned an unknown decision")
+        resolve({ d: h.permissionDecision, why: h.permissionDecisionReason })
+      } catch {
+        confirm("returned unreadable output")
+      }
+    })
+    child.stdin.on("error", () => {})
+    child.stdin.end(JSON.stringify({ tool_name: "Bash", cwd, tool_input: { command } }))
+  })
+
+export default {
+  id: "agent-guardrails",
+  setup: async (ctx) => {
+    const base = ctx.location.directory
+    const recent = []
+    await ctx.shell.hook("create.before", (inv) => {
+      recent.push({ command: inv.command, cwd: path.resolve(base, inv.cwd || ".") })
+      if (recent.length > 64) recent.shift()
+    })
+    await ctx.permission.hook("evaluate", async (ev) => {
+      if (ev.action !== "shell" || ev.effect === "deny") return
+      if (!ev.resources.some((r) => PUSH.test(r))) return
+      const hit = recent.findLast((x) => ev.resources.every((r) => x.command.includes(r)))
+      const cwd = hit ? hit.cwd : base
+      let worst = null
+      let unjudged = false
+      for (const r of ev.resources) {
+        const v = PUSH.test(r) ? await judge(r, cwd) : null
+        if (!v) { unjudged = true; continue }
+        if (!worst || RANK[v.d] > RANK[worst.d]) worst = v
+      }
+      if (!worst) return
+      if (worst.d === "allow") {
+        if (!unjudged) ev.effect = "allow"
+        return
+      }
+      ev.effect = worst.d
+      ev.message = worst.why
+    })
+  },
+}
+EOF
+}
+
+# Say what the catch-all ended up as, since it decides every unlisted command.
+oc_catchall_note() { # $1 = config file
+  local s
+  s=$(jq -r '(.permission | type) as $t
+    | if $t == "string" then "top:" + .permission
+      elif $t != "object" then "none"
+      else ([.permission.bash, .permission.shell] | map(select(. != null)) | first) as $b
+        | if $b == null then "none"
+          elif ($b | type) == "string" then "tool:" + $b
+          else "star:" + ($b["*"] // "") end end' "$1")
+  case "$s" in
+    star:ask) ;;
+    top:*|tool:*) note "         ! permission is \"${s#*:}\" as a single value in $1, so unlisted"
+                  note "           commands follow it, not a prompt — no catch-all was added" ;;
+    star:*)       note "         ! your own \"*\": \"${s#star:}\" in permission.bash is kept — unlisted"
+                  note "           commands follow it rather than prompting" ;;
+  esac
+}
+
+write_opencode() { # $1 = config dir (~/.config/opencode, or <project>/.opencode)
+  local d=$1 f p="$1/$OC_PLUGIN"
+  have_opencode || { note "opencode skipped (OpenCode not installed)"; return; }
+  if ! f=$(oc_config "$d"); then
+    note "opencode ! $d/opencode.jsonc has comments jq cannot keep — rules not written."
+    note "           Move its settings to opencode.json, or add the rules by hand."
+  else
+    ensure_json "$f" '{}'
+    backup "$f"
+    jq --argjson known "$(oc_known)" --argjson ours "$(oc_ours)" "$OC_JQ_DEFS"'
+      drop_ours($known) | .permissions = ((.permissions // []) + $ours) | add_catchall
+    ' "$f.bak" > "$f"
+    note "opencode $f  (rules)"
+    oc_catchall_note "$f"
+  fi
+  if [ "$DO_HOOK" -eq 0 ]; then
+    if owned_remove "$p"; then note "         guard removed ($p — --no-hook)"; fi
+    return 0
+  fi
+  opencode_plugin | owned_write opencode "$p" || return 0
+  note "         $p  (+guard: deny, ask, and allow for a push on its own)"
+}
+
+unwrite_opencode() { # $1 = config dir
+  local d=$1 f
+  if owned_remove "$d/$OC_PLUGIN"; then note "opencode removed $d/$OC_PLUGIN"; fi
+  f=$(oc_config "$d") && [ -f "$f" ] || { note "opencode skipped (no config in $d)"; return; }
+  jq -e . "$f" >/dev/null || { echo "$f is not valid JSON" >&2; exit 1; }
+  backup "$f"
+  jq --argjson known "$(oc_known)" "$OC_JQ_DEFS"'drop_ours($known) | drop_catchall' "$f.bak" > "$f"
+  note "opencode cleaned $f"
+}
+
+# Permissive for OpenCode is one rule, "* * allow", appended last so it beats
+# the defaults (the .env ask among them) and every earlier rule in the file.
+# It overrides the user's own rules rather than deleting them, so uninstall
+# hands them back intact. Config files that load later — a project's, when
+# this is global — still apply, as Claude's project settings do.
+permit_opencode() { # $1 = config dir
+  local d=$1 f
+  have_opencode || { note "opencode skipped (OpenCode not installed)"; return; }
+  if owned_remove "$d/$OC_PLUGIN"; then note "opencode guard removed ($d/$OC_PLUGIN)"; fi
+  if ! f=$(oc_config "$d"); then
+    note "opencode ! $d/opencode.jsonc has comments jq cannot keep — not made permissive."
+    return 0
+  fi
+  ensure_json "$f" '{}'
+  backup "$f"
+  jq --argjson known "$(oc_known)" --argjson permit "$OC_PERMIT" "$OC_JQ_DEFS"'
+    drop_ours($known) | drop_catchall | .permissions = ((.permissions // []) + $permit)
+  ' "$f.bak" > "$f"
+  note "opencode $f  (\"*\" \"*\" allow, last — overrides every earlier rule)"
+}
+
 # ───────────────────────────────────────────────────────────────────── dispatch
 
 # The whole header block is the help text, so print it up to the first line
@@ -1283,7 +1537,7 @@ if [ "$SCOPE" = "print" ] && [ "$PERMISSIVE" -eq 1 ]; then
     --argjson allow "$(arr "${PERMIT_ALLOW[@]}")" \
     --argjson agy_allow "$(printf '%s\n' "${PERMIT_AGY[@]}" | jq -R . | jq -s .)" \
     --arg toml "$(printf '%s\n' "${PERMIT_CODEX_TOML[@]}")" \
-    --arg gemini "$(gemini_permit_toml)" '
+    --arg gemini "$(gemini_permit_toml)" --argjson oc "$OC_PERMIT" '
     {claude: {permissions: {allow: $allow, ask: [], deny: [],
                             defaultMode: "bypassPermissions"}},
      agy: {permissions: {allow: $agy_allow, ask: [], deny: []},
@@ -1292,6 +1546,7 @@ if [ "$SCOPE" = "print" ] && [ "$PERMISSIVE" -eq 1 ]; then
              + " (+ [projects.\"<path>\"] trust_level = trusted for --project)"),
      gemini: $gemini,
      cline: "nothing to write — Cline auto-approves every tool by default; guard removed",
+     opencode: {permissions: $oc},
      guard: "removed — permissive mode installs no push guard"}'
   exit 0
 fi
@@ -1303,13 +1558,15 @@ if [ "$SCOPE" = "print" ]; then
     --argjson agy_allow "$(to_agy "${ALLOW[@]}" | jq -R . | jq -s .)" \
     --argjson agy_ask "$(to_agy "${ASK[@]}" | jq -R . | jq -s .)" \
     --argjson agy_deny "$(to_agy "${DENY[@]}" | jq -R . | jq -s .)" \
-    --arg gemini "$(gemini_toml "$([ "$MANAGED" -eq 1 ] && echo admin || echo user)")" '
+    --arg gemini "$(gemini_toml "$([ "$MANAGED" -eq 1 ] && echo admin || echo user)")" \
+    --argjson oc "$(oc_ours)" '
     {claude: ({permissions: {allow: $allow, ask: $ask, deny: $deny}}
               + (if $managed == 1 then {allowManagedPermissionRulesOnly: true} else {} end)),
      agy: {permissions: {allow: $agy_allow, ask: $agy_ask, deny: $agy_deny}},
      codex: "no allowlist — approval_policy x sandbox_mode x trust_level; enterprise: /etc/codex/managed_config.toml",
      gemini: $gemini,
-     cline: "no allowlist — every tool is auto-approved unless run with --auto-approve false; guard only"}'
+     cline: "no allowlist — every tool is auto-approved unless run with --auto-approve false; guard only",
+     opencode: {permission: {bash: {"*": "ask"}}, permissions: $oc}}'
   exit 0
 fi
 
@@ -1321,6 +1578,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     unwrite_agy    "${HOME}/.gemini/antigravity-cli/settings.json"
     unwrite_gemini "$GEMINI_SETTINGS" "$GEMINI_POLICY"
     unwrite_cline  "$CLINE_HOME/hooks"
+    unwrite_opencode "$OC_GLOBAL"
   else
     PROJ=$(cd "${PROJ:-$PWD}" && pwd)
     echo "uninstall: project ($PROJ)"
@@ -1329,6 +1587,7 @@ if [ "$UNINSTALL" -eq 1 ]; then
     unwrite_agy    "${HOME}/.gemini/antigravity-cli/settings.json"
     unwrite_gemini "$PROJ/.gemini/settings.json"
     unwrite_cline  "$PROJ/.cline/hooks"
+    unwrite_opencode "$PROJ/.opencode"
     # A --project --permissive run trusts the path in the GLOBAL codex config,
     # because that is the only place [projects.*] exists. Take just that block
     # back out; leave the rest of the global config alone.
@@ -1359,6 +1618,7 @@ if [ "$PERMISSIVE" -eq 1 ]; then
                      && echo "allow * policy (the --yolo equivalent), guard removed" \
                      || echo "guard removed only — Gemini has no project-level policy")
      cline         guard removed (Cline already auto-approves every tool)
+     opencode      "*" "*" allow appended last (overrides, does not delete), guard removed
 
      Backups go to <file>.bak, which is single-level and is overwritten on the
      next run. Only do this in a container or VM you can throw away.
@@ -1379,6 +1639,7 @@ EOF
     permit_agy    "${HOME}/.gemini/antigravity-cli/settings.json"
     permit_gemini "$GEMINI_SETTINGS" "$GEMINI_POLICY"
     permit_cline  "$CLINE_HOME/hooks"
+    permit_opencode "$OC_GLOBAL"
   else
     echo "scope: project ($PROJ), FULLY PERMISSIVE"
     permit_claude "$PROJ/.claude/settings.json"
@@ -1387,6 +1648,7 @@ EOF
     permit_agy    "${HOME}/.gemini/antigravity-cli/settings.json" "$PROJ"
     permit_gemini "$PROJ/.gemini/settings.json"
     permit_cline  "$PROJ/.cline/hooks"
+    permit_opencode "$PROJ/.opencode"
   fi
 
   echo "allow=everything ask=0 deny=0  guard=none"
@@ -1407,6 +1669,7 @@ if [ "$SCOPE" = "global" ]; then
   write_agy    "${HOME}/.gemini/antigravity-cli/settings.json"
   write_gemini "$GEMINI_SETTINGS" "$GEMINI_POLICY"
   write_cline  "$CLINE_HOME/hooks"
+  write_opencode "$OC_GLOBAL"
 else
   PROJ=$(cd "${PROJ:-$PWD}" && pwd)
   echo "scope: project ($PROJ)"
@@ -1421,6 +1684,7 @@ else
   write_agy    "${HOME}/.gemini/antigravity-cli/settings.json" "$PROJ"
   write_gemini "$PROJ/.gemini/settings.json"
   write_cline  "$PROJ/.cline/hooks"
+  write_opencode "$PROJ/.opencode"
 fi
 
 echo "allow=${#ALLOW[@]} ask=${#ASK[@]} deny=${#DENY[@]}  guard=$([ "$DO_HOOK" -eq 1 ] && echo "$GUARD" || echo none)"

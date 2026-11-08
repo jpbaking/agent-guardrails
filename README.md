@@ -6,7 +6,7 @@ Coding agents are fast right up until they aren't. Every `npm test`, every `git 
 
 `agent-guardrails` is the middle path: a scoped allowlist that auto-approves the ~495 commands you actually run all day, keeps a prompt on the ones that reach off your machine, and hard-blocks the ones nobody should run unattended. Plus a hook that makes the agent stop and ask before it pushes to `main`.
 
-One command, all five supported agent CLIs — **Claude Code, Codex, agy, Gemini CLI and Cline**:
+One command, all six supported agent CLIs — **Claude Code, Codex, agy, Gemini CLI, Cline and OpenCode**:
 
 ```bash
 ./agent-guardrails.sh --global
@@ -21,10 +21,12 @@ scope: global (user-level)
   gemini  ~/.gemini/policies/agent-guardrails.toml  (rules)
           ~/.gemini/settings.json  (+guard: deny and ask; Gemini hooks cannot allow)
   cline   ~/.cline/hooks/PreToolUse.sh  (guard only, deny-only)
+  opencode ~/.config/opencode/opencode.json  (rules)
+           ~/.config/opencode/plugins/agent-guardrails.js  (+guard: deny, ask, and allow for a push on its own)
 allow=495 ask=272 deny=76
 ```
 
-Those five are the whole list. Other harnesses — pi, Cursor, OpenCode and the rest — are not supported, and the script writes nothing for them.
+Those six are the whole list. Other harnesses — pi, Cursor and the rest — are not supported, and the script writes nothing for them.
 
 ---
 
@@ -120,7 +122,7 @@ Anything not in any list also prompts — that's the default, and it does real w
 
 Protected branches **ask** rather than deny, so a push you explicitly wanted goes ahead once you confirm it. The agent cannot answer the prompt itself, and this holds under `--dangerously-skip-permissions` too: measured with `claude -p` in bypass mode, a hook "ask" stopped the command where the no-hook control ran it.
 
-Codex and Cline hooks cannot ask, so there a protected push is still **blocked**, with a reason that says to push from a terminal or exempt the branch — letting it through would mean no prompt at all on Cline, which auto-approves everything. Gemini asks, like Claude.
+Codex and Cline hooks cannot ask, so there a protected push is still **blocked**, with a reason that says to push from a terminal or exempt the branch — letting it through would mean no prompt at all on Cline, which auto-approves everything. Gemini asks, like Claude. So does OpenCode, through a plugin — with [one difference](#opencode-the-guard-runs-as-a-plugin) on compound commands.
 
 Protected by default: `main`, `master`, `develop`, `development`, `trunk`, `staging`, `stage`, `prod`, `production`, `release/*`, `hotfix/*`, plus whatever `origin/HEAD` actually points at. Override with `CLAUDE_PROTECTED_BRANCHES` or `~/.claude/protected-branches.txt`.
 
@@ -150,7 +152,7 @@ The guard is copied to `~/.agents/hooks/` so the absolute path written into your
 
 Every write is additive, de-duplicated, idempotent, and backed up to `<file>.bak` first. Your existing rules, hooks, model, and theme survive. Run it twice and nothing changes. (`--permissive` is the one exception — see below.)
 
-An AI coding agent (Claude Code, Codex, agy, Gemini CLI or Cline) can instead follow [AGENT-INSTALL.md](AGENT-INSTALL.md), a merge-aware, survey-before-write procedure that offers the user a choice of mode — fully permissive (its default), guarded allowlist, allowlist only, or preview — runs the script, and reports every collision first.
+An AI coding agent (Claude Code, Codex, agy, Gemini CLI, Cline or OpenCode) can instead follow [AGENT-INSTALL.md](AGENT-INSTALL.md), a merge-aware, survey-before-write procedure that offers the user a choice of mode — fully permissive (its default), guarded allowlist, allowlist only, or preview — runs the script, and reports every collision first.
 
 ### Fully permissive mode
 
@@ -169,10 +171,11 @@ The inverse of everything else here: it removes the gate rather than scoping it.
 | **agy** | `command(*)`, `read_file(*)`, `write_file(*)` in `allow` — the exact inverse of its default, which is to *ask* on `command(*)`. `ask`/`deny` emptied, `allowNonWorkspaceAccess: true`. |
 | **Gemini CLI** | A policy file allowing `toolName = "*"` — the policy form of `--yolo`, which `settings.json` cannot set. Copies Gemini's own `yolo.toml`, including its one exception: `ask_user` still asks, since auto-approving it would answer a question meant for you. Guard removed. **Global only** — see below. |
 | **Cline** | Nothing to widen — Cline auto-approves every tool unless you run it with `--auto-approve false`. Guard removed. |
+| **OpenCode** | One rule, `{"action": "*", "resource": "*", "effect": "allow"}`, appended **last** to `permissions`. OpenCode is last-match-wins, so it beats its own defaults and every earlier rule in the file — yours included — without deleting them; uninstall hands them back intact. The `"*": "ask"` catch-all and the guard plugin are removed. Config files that load later (a project's `.opencode/`, under a global install) still apply. |
 
 It prints what it is about to do and waits for you to type `yes`; `--yes` skips that, and it refuses to run non-interactively without it. `--managed` and `--permissive` together are an error — one pins policy centrally, the other removes it.
 
-**It clears `ask` and `deny` outright, including rules you added yourself.** That is the mode, not an oversight — a deny rule you wrote is still a gate. `<file>.bak` is your only way back, and it is single-level. Codex's `config.toml` is the exception: keys it displaces are commented out with a `#agent-guardrails-disabled#` tag rather than deleted, so uninstall restores them exactly.
+**It clears `ask` and `deny` outright, including rules you added yourself.** That is the mode, not an oversight — a deny rule you wrote is still a gate. `<file>.bak` is your only way back, and it is single-level. Codex's `config.toml` is the exception: keys it displaces are commented out with a `#agent-guardrails-disabled#` tag rather than deleted, so uninstall restores them exactly. OpenCode is the other: its last-match-wins order lets one trailing allow override your rules without removing them.
 
 Use it in a container or a VM you can throw away. If your reason for wanting it is prompt fatigue, the allowlist is the answer to that and this is not.
 
@@ -205,6 +208,7 @@ Yes — measured on Claude Code and agy by side effect rather than by reading th
 |---|---|---|
 | **Claude Code** | `deny: ["Bash(touch *)"]` → not created | **created** |
 | **agy** | `deny: ["command(touch)"]` → not created | **created** |
+| **OpenCode** | `permissions: [{"action": "shell", "resource": "touch *", "effect": "deny"}]` → not created, *"Permission denied: shell"* | **created** — the deny is still in the file, overridden |
 
 agy names the mechanism itself in the denied case: *"The command was denied by a user-configured deny rule."* That confirms both that agy enforces `deny` — its rule semantics are otherwise inferred — and that clearing it is what lets the command through.
 
@@ -271,7 +275,7 @@ OnRequest, OnRequest] (set by /etc/codex/requirements.toml)
 
 Since permissive mode comments your existing value out on the way past, running it under such a policy would leave you **more** gated than before — the one outcome worse than doing nothing. So it doesn't: when `/etc/codex/requirements.toml` forbids either value, `--permissive` skips Codex, leaves the config untouched, and leaves the push guard in place. It says so rather than reporting a success it didn't achieve.
 
-Claude, agy, Gemini CLI and Cline are still made permissive in that case — the policy constrains Codex only. Set `CODEX_REQUIREMENTS` to point the check at a different file if you need to test it.
+Claude, agy, Gemini CLI, Cline and OpenCode are still made permissive in that case — the policy constrains Codex only. Set `CODEX_REQUIREMENTS` to point the check at a different file if you need to test it.
 
 "Skips" means nothing is written for Codex: no policy block, your existing `approval_policy` and `sandbox_mode` not displaced, no `trust_level` entry, and the push guard left in `hooks.json` rather than removed. It skips because writing would leave you worse off — not because the settings are unwanted.
 
@@ -312,15 +316,17 @@ This **subtracts exactly the rules it added** and strips the guard hook — it d
 
 Two things it deliberately leaves behind: the guard script itself (it prints the path and the `rm` for you, in case a project-scope install still references it), and `[features] hooks = true` in Codex's `config.toml`, since your other hooks may need it. On agy it leaves `trustedWorkspaces` and `allowNonWorkspaceAccess` alone.
 
-Gemini CLI and Cline are different: there the script owns whole files — `~/.gemini/policies/agent-guardrails.toml` and `PreToolUse.sh` in Cline's hooks directory — because both CLIs load every file in those directories. Uninstall deletes them, but only if they carry the script's `agent-guardrails: generated` marker. A file of the same name that you wrote yourself is never overwritten or deleted; the installer says so and skips it.
+Gemini CLI, Cline and OpenCode are different: there the script owns whole files — `~/.gemini/policies/agent-guardrails.toml`, `PreToolUse.sh` in Cline's hooks directory, and `plugins/agent-guardrails.js` in OpenCode's config directory — because each CLI loads every file in those directories. Uninstall deletes them, but only if they carry the script's `agent-guardrails: generated` marker. A file of the same name that you wrote yourself is never overwritten or deleted; the installer says so and skips it.
 
-It also undoes a `--permissive` install: the `config.toml` block goes, the keys that block displaced are un-commented back to their original values, the `[projects."<path>"]` trust entry added for a project is removed, and `defaultMode: bypassPermissions` is deleted. Uninstalling gets you to *no rules*, not back to the permissive state.
+On OpenCode it also takes out the `"*": "ask"` catch-all it put at the head of `permission.bash` — matched by value, so a `"*": "ask"` you had written there yourself goes too.
+
+It also undoes a `--permissive` install: the `config.toml` block goes, the keys that block displaced are un-commented back to their original values, the `[projects."<path>"]` trust entry added for a project is removed, `defaultMode: bypassPermissions` is deleted, and OpenCode's trailing allow-everything rule is subtracted. Uninstalling gets you to *no rules*, not back to the permissive state.
 
 Rules the project shipped in earlier versions and has since retired are subtracted too, so an uninstall is clean even if you installed an old version. One caveat remains: if a rule of your own is byte-identical to one of ours, uninstall removes it too — after the fact there is no way to tell them apart.
 
-**Claude Code won't pick the hook up mid-session** — open `/hooks` once to reload, or start a new session.
+**Claude Code won't pick the hook up mid-session** — open `/hooks` once to reload, or start a new session. **OpenCode runs a background service** that holds its config: `opencode service restart` after installing or uninstalling.
 
-## The five harnesses are not equal
+## The six harnesses are not equal
 
 This is the part other tools gloss over. Each CLI's capabilities were determined by reading its binary or its shipped source, not by guessing:
 
@@ -331,10 +337,11 @@ This is the part other tools gloss over. Each CLI's capabilities were determined
 | **agy** | 490 rules, `command(git commit)` | **none** | `1.1.7` | 2026-07-29 |
 | **Gemini CLI** | 495 rules, `commandPrefix = "git commit"`, global only | **deny and ask** — not allow | `0.67.0` | 2026-11-08 |
 | **Cline** | **none** — tools are auto-approved, not matched per command | **deny only**, and a deny ends the run | `3.0.74` | 2026-11-08 |
+| **OpenCode** | 495 rules, `{"action": "shell", "resource": "git commit *"}`, plus a `"*": "ask"` catch-all | **deny and ask**; allow only for a push on its own | `2.2.6` | 2026-11-08 |
 
 > **Check the dates in the last column.** These CLIs ship fast — agy moved from `1.1.6` to `1.1.7` during a single afternoon of writing this. If a date is old, treat that row as a starting point rather than fact.
 
-Gemini gets every one of Claude's 495 allow, 272 ask and 76 deny rules, translated one for one.
+Gemini gets every one of Claude's 495 allow, 272 ask and 76 deny rules, translated one for one. So does OpenCode, with one deny written twice: OpenCode matches a file inside the project by its relative path, so `Read(//**/.env.production)` becomes both `*/.env.production` and `.env.production`.
 
 **Codex** has no per-command allowlist at all. Its gating is `approval_policy` × `sandbox_mode` × `[projects.*] trust_level`. And its hook engine rejects anything but a denial — the binary literally carries the string `PreToolUse hook returned unsupported permissionDecision:allow`. So Codex gets the guard in `--deny-only` mode and no rules — and since it cannot ask, a protected-branch push that would ask on Claude is blocked on Codex. That composes well: if your Codex is already on a trusted project with full access, the guard carves protected branches back out.
 
@@ -347,6 +354,40 @@ The third term in that product is not decoration. A project-local `.codex/config
 The rule behaviour above — word boundaries, priorities, compound commands, plan mode — was checked by loading the generated file through Gemini's own `loadPoliciesFromToml` and `PolicyEngine`, imported from the installed bundle. The hook behaviour was read from the bundle's source and has **not** yet been exercised in a live Gemini session.
 
 **Cline** (the 3.x CLI) has no per-command allowlist. Its gate is per *tool* — `toolPolicies` / `--auto-approve`, which defaults to **true**, so every shell command runs unprompted out of the box. The one gate it does offer is a `PreToolUse` hook *file* in `~/.cline/hooks/` or `<project>/.cline/hooks/`, run with bash, payload on stdin. It answers `{"cancel": true, "errorMessage": …}`, and that **ends the whole run**, not just the one tool call. A `review` field is parsed but never acted on, so there is no ask. So Cline gets the guard in deny-only mode: a protected-branch push, which asks on Claude, is blocked on Cline — that guard is the only thing standing between it and `git push origin main`. All of this comes from reading the shipped `@cline/core` source; it has **not** yet been exercised in a live Cline session.
+
+**OpenCode** (2.x, `@opencode/cli`) has a real rule engine, and it is the one harness here that is **last-match-wins**: every rule is one `{action, resource, effect}` in a single ordered list, and the last that matches decides. The list is OpenCode's agent defaults, then each config file in load order — `~/.config/opencode/` (or `$OPENCODE_CONFIG_DIR`), then `<project>/opencode.json`, then `<project>/.opencode/` — and within a file the legacy `permission` object before the native `permissions` array. Its pattern syntax is already Claude's: `git status *` matches `git status` and `git status -s` but not `git statusx`, and a compound command is split and every part checked. So the rules translate one for one, written allow → ask → deny, which reproduces Claude's deny > ask > allow, and they land after any rules of your own in the same file. Two catches shaped the design:
+
+- **The defaults allow everything.** The built-in `build` agent opens with `* * allow`, so an allowlist on its own changes nothing — every command already runs. The installer therefore puts `"*": "ask"` at the **head** of `permission.bash`: first, so it overrides the defaults without shadowing allows you wrote after it. This makes OpenCode prompt for unlisted commands, as Claude does, which is a real change from its out-of-the-box behaviour. A `"*"` of your own there is left alone, and the installer says unlisted commands follow it.
+- **There are no command hooks, only JavaScript plugins** — see the guard below.
+
+Project scope writes `<project>/.opencode/`. OpenCode has no workspace-trust gate for project config or plugins, so unlike Claude and Gemini nothing has to be accepted first — and, by the same token, a repository you clone can ship plugins of its own. An `opencode.jsonc` with comments is skipped rather than rewritten, since jq cannot keep the comments; one without comments is edited in place. OpenCode also ships a legacy 1.x line on npm (`opencode-ai`); only 2.x was examined, so treat 1.x as unsupported.
+
+#### OpenCode: the guard runs as a plugin
+
+OpenCode auto-loads every `*.js` in a config directory's `plugins/`, so the guard is installed as `plugins/agent-guardrails.js`, a file the script owns. The plugin hooks `shell` `create.before` to learn the real command and working directory, then `permission.evaluate` to decide, and calls `git-push-guard.sh` once per command segment. The hook can set any of allow, ask and deny, but it gets **one verdict for the whole command**, so it applies the guard's answer like this:
+
+| the guard says | the plugin does |
+|---|---|
+| deny or ask, for any segment | applies it, and the guard's reason appears in the prompt |
+| allow, and **every** segment is a push it approved | allow — `git push` on `feature/login` runs unprompted |
+| allow, but other commands ride along | nothing — the rules decide, and `git push` is unlisted, so it asks |
+| the guard fails to run | ask, never allow |
+
+The third row is the difference from Claude: `git add -A && git commit -m wip && git push` asks on OpenCode where it is allowed on Claude, because an allow there would also wave through whatever else is in the command — `git push && rm -rf build` included. A rule-level deny (`git push --all`) never reaches the hook at all, and the hook never lowers one.
+
+Measured by side effect in live `opencode run` sessions on `2.2.6`, with no bypass flag. A non-interactive run auto-rejects anything that asks, so present means it ran and absent means it was gated:
+
+| command | result |
+|---|---|
+| `python3 -c …` (allowlisted) | **ran** |
+| `touch x` (unlisted) | asked → not run |
+| `dd if=…` (denied) | *"Permission denied: shell"* → not run |
+| `git push origin feature/x` | **pushed** — and **asked** with the plugin removed (control) |
+| `git push origin feature/x:main` | asked → remote `main` unchanged |
+| `git commit … && git push origin feature/x` | asked → nothing committed or pushed |
+| push to `main`, with a user rule allowing `git push *` | asked — and **pushed** with the plugin removed (control) |
+
+The rule behaviour behind the first three rows — word boundaries, narrow ask over broad allow, deny over ask, compound commands, both forms of the `.env.production` read deny — was also checked against the full resolved ruleset (`opencode debug agents`) using OpenCode's own `Wildcard.match` and `evaluate`, taken verbatim from the 2.2.6 source.
 
 These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](CONTRIBUTING.md) has the exact commands to re-verify them against a new release — please update the table and its date in the same PR.
 
@@ -361,13 +402,15 @@ These are reverse-engineered constraints, not documented API. [CONTRIBUTING.md](
 
 Cline has no central policy mechanism this tool knows of, so there is nothing to ship for it.
 
+OpenCode reads a managed tier from `/etc/opencode/` (macOS: `/Library/Application Support/opencode/`, or an MDM profile), loaded **last** so it overrides user and project config. The `opencode` block of `--print --managed` is the content for `/etc/opencode/opencode.json`. No file is shipped for it in `enterprise/`, because that path is hardcoded and the tier was not exercised — that needs root. Read the source, not measured.
+
 `./agent-guardrails.sh --print --managed` prints the same content for pasting into a ticket.
 
 These hold against this tool, not just against users: deploy `codex-requirements.toml` and `--permissive` [refuses to touch Codex](#if-your-admins-disabled-codex-full-access-permissive-skips-codex-entirely) rather than writing settings that would be clamped. A policy that says no should not be answerable by the thing it is saying no to.
 
 ## Honest limitations
 
-- **`deny` rules on pipes are decorative.** `Bash(curl * | sh)` cannot reliably catch pipe-to-shell — prefix matching isn't a parser, and a rewritten command sidesteps it. Those entries document intent; they are not enforcement.
+- **`deny` rules on pipes are decorative.** `Bash(curl * | sh)` cannot reliably catch pipe-to-shell — prefix matching isn't a parser, and a rewritten command sidesteps it. Those entries document intent; they are not enforcement. On OpenCode they never match at all, since it splits a pipeline into its parts before matching — but the bare `sh` part is unlisted there, so the command still asks.
 - **`officecli batch` is an escape hatch around its own gates.** `remove` and `raw-set` sit in `ask`, but `batch` reads a list of operations from stdin or `--input` and those operations can include removals. `batch` is allowed because it is the efficient path an agent should take, and the blast radius is a local document file — but the `remove` gate is best-effort, not a boundary. The same is true of `dump`, which round-trips a document to replayable JSON.
 - **The allowlist cannot see inside a query string.** This is why database clients are treated differently from every other toolchain here. With `terraform` or `kubectl` the dangerous verb is the first token, so a narrow `ask` catches `apply` and `destroy` while `plan` and `get` run free. With `psql`, the destructive part is *inside the argument* — `psql -c 'DROP TABLE users'` is indistinguishable from a `SELECT` to prefix matching. So `psql`, `mysql`, `mongosh`, `redis-cli` and friends sit in `ask` wholesale rather than being split by verb. The `redis-cli flushall` deny rules are best-effort for the same reason, and are case-sensitive while redis commands are not.
 - **`npm run` executes whatever the project defines.** It is allowed, via the broad `npm`/`yarn`/`pnpm` rules, and it is the workhorse — most JS and React work is `npm run dev`, `npm run build`, `npm test`. That is the right call *for repositories you trust*, because the scripts are curated by the project. It is exactly the wrong call for a repo the agent just cloned: `npm run` and `npm install` (via `postinstall` hooks) are the widest arbitrary-execution paths on the JS side. If your agents clone untrusted code, that is a sandbox problem, not an allowlist one.
@@ -376,9 +419,11 @@ These hold against this tool, not just against users: deploy `codex-requirements
 - **A `--project` install on Claude is inert until the workspace is trusted.** Project-level `permissions.allow` entries are discarded wholesale in an untrusted workspace, and trust does not inherit from a parent directory. [Details above.](#claude-ignores-project-rules-in-an-untrusted-workspace) The installer warns; it will not accept the trust dialog for you.
 - **An `ask` rule shadows a more specific `allow` rule.** `Bash(npx *)` in ask would swallow `Bash(npx playwright *)` in allow. The rule lists are written to avoid overlaps entirely rather than depend on precedence; keep it that way when adding rules.
 - **agy's prefix semantics are inferred**, from built-ins like `command(npm test)` and `command(tail -F)`. If agy turns out to match exactly rather than by prefix, most of its 490 rules are inert. Verify before relying on it.
-- **The guard's decision covers the whole command.** It scans every segment of a compound command, so `make test && git push origin main` asks (or, on Codex and Cline, is blocked) as a whole — the build does not run first, and approving it approves both. Run the work and the push as separate commands if you want to approve only the push.
+- **The guard's decision covers the whole command.** It scans every segment of a compound command, so `make test && git push origin main` asks (or, on Codex and Cline, is blocked) as a whole — the build does not run first, and approving it approves both. Run the work and the push as separate commands if you want to approve only the push. On OpenCode this goes one step further: even an approved feature-branch push asks when anything else is in the same command. [Why.](#opencode-the-guard-runs-as-a-plugin)
 - **Gemini still prompts on a plain feature-branch push.** Its hooks can deny and ask but cannot allow, and `git push` is never allowlisted (see the push guard above), so the one thing the guard approves on Claude still stops for a click on Gemini. It also asks on any command with a redirection (`ls > out.txt`) even when the command itself is allowlisted — that is Gemini's own rule, left as is.
 - **On Cline the guard is the only gate, and a deny ends the run.** Cline auto-approves every tool by default and has no command allowlist, so the allow/ask/deny lists do not apply there at all. When the guard denies a push, Cline stops the task rather than letting the agent try something else. Protected-branch pushes are blocked rather than asked for the same reason, and force pushes to feature branches are not stopped at all, because Cline has no way to ask.
+- **OpenCode's `--auto` answers the guard's asks for it.** `--auto` (also spelled `--yolo` and `--dangerously-skip-permissions`) is handled by the client, which replies "once" to every permission request — the guard's protected-branch ask included. The plugin cannot see the flag, so under `--auto` a push to `main` goes through and only deny rules still hold. Unlike Claude's bypass mode, which a hook ask still stops, this was read from the source, not measured.
+- **On OpenCode, our rules beat yours for the commands we list.** OpenCode is last-match-wins and our `permissions` array loads after your `permission` object in the same file, so a rule of yours on, say, `npm *` is overridden by ours. Allows of yours for commands we do not list survive, because the catch-all sits ahead of them. To override one of ours, put the rule in a config that loads later — a project's `.opencode/opencode.json` under a global install.
 - **Bypass mode skips the rules.** If you run with `--dangerously-skip-permissions` anyway, allow/ask/deny are ignored wholesale — only the hook still fires. `--permissive` is that state made persistent, and it removes the hook too, so nothing fires at all.
 
 ### Overriding the guard
