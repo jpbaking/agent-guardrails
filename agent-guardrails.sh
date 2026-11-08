@@ -6,7 +6,7 @@
 #   ./agent-guardrails.sh --global            # user-level, every harness
 #   ./agent-guardrails.sh --project [PATH]    # project/workspace-level (default: cwd)
 #   ./agent-guardrails.sh --print             # show what would be written, touch nothing
-#   ./agent-guardrails.sh --global --no-hook  # allowlist only, skip the push guard
+#   ./agent-guardrails.sh --global --no-hook  # allowlist only; removes any installed guard
 #   ./agent-guardrails.sh --print --managed   # shape as an enterprise policy proposal
 #   ./agent-guardrails.sh --global --uninstall    # remove every rule and hook it added
 #   ./agent-guardrails.sh --project --uninstall   # same, for a project
@@ -722,6 +722,24 @@ claude_trust_note() { # $1 = project path
   note "          otherwise the rules above are inert. (Global scope is unaffected.)"
 }
 backup() { cp "$1" "$1.bak"; }
+
+# --no-hook means "no guard", not "leave whatever guard is there": a guard from
+# an earlier install would otherwise keep firing, which is exactly what someone
+# passing --no-hook is trying to stop. These find it and take it out. The test
+# is for any "command" mentioning the guard script, wherever the host nests it.
+has_guard() { # $1 = JSON file
+  [ -f "$1" ] && jq -e '[.. | objects | .command? | strings
+                         | select(test("git-push-guard\\.sh"))] | length > 0' "$1" >/dev/null 2>&1
+}
+# The jq that takes the guard out of hooks.PreToolUse (Claude and Codex).
+PRETOOL_UNGUARD='
+  if .hooks.PreToolUse then
+    .hooks.PreToolUse |= (
+      map(.hooks //= [] | .hooks |= map(select((.command // "") | test("git-push-guard\\.sh") | not)))
+      | map(select(.hooks | length > 0)))
+    | if (.hooks.PreToolUse | length) == 0 then del(.hooks.PreToolUse) else . end
+    | if (.hooks | length) == 0 then del(.hooks) else . end
+  else . end'
 ensure_json() {
   mkdir -p "$(dirname "$1")"
   [ -f "$1" ] || printf '%s\n' "${2:-\{\}}" > "$1"
@@ -1008,9 +1026,11 @@ write_claude() { # $1 = settings.json path
             + [{matcher: "Bash",
                 hooks: [{type: "command", command: $cmd, timeout: 10,
                          statusMessage: "Checking push target..."}]}])
-      else . end
+      else '"$PRETOOL_UNGUARD"' end
   ' "$f.bak" > "$f"
-  note "claude  $f  (+guard)"
+  if [ "$DO_HOOK" -eq 1 ]; then note "claude  $f  (+guard)"
+  elif has_guard "$f.bak"; then note "claude  $f  (guard removed — --no-hook)"
+  else note "claude  $f"; fi
 }
 
 write_codex() { # $1 = .codex dir
@@ -1021,7 +1041,16 @@ write_codex() { # $1 = .codex dir
   if toml_unpermit "$toml" "$TOML_BEGIN" 1; then
     note "codex   reverted permissive policy in $toml"
   fi
-  [ "$DO_HOOK" -eq 1 ] || { note "codex   skipped (--no-hook; Codex gets no rules, only the guard)"; return; }
+  if [ "$DO_HOOK" -eq 0 ]; then
+    if has_guard "$f"; then
+      backup "$f"
+      jq "$PRETOOL_UNGUARD" "$f.bak" > "$f"
+      note "codex   guard removed from $f (--no-hook; Codex gets no rules, only the guard)"
+    else
+      note "codex   skipped (--no-hook; Codex gets no rules, only the guard)"
+    fi
+    return
+  fi
   ensure_json "$f" '{"hooks":{}}'
   backup "$f"
   # Codex PreToolUse accepts permissionDecision "deny" and nothing else.
@@ -1117,7 +1146,14 @@ write_gemini() { # $1 = settings.json, $2 = policy file ("" at project scope)
     note "gemini  no rules at project scope — Gemini's workspace policy tier is"
     note "        non-functional (its own docs, issue #18186); --global installs them"
   fi
-  [ "$DO_HOOK" -eq 1 ] || return 0
+  if [ "$DO_HOOK" -eq 0 ]; then
+    if has_guard "$f"; then
+      backup "$f"
+      jq "$GEMINI_UNGUARD" "$f.bak" > "$f"
+      note "        guard removed from $f (--no-hook)"
+    fi
+    return 0
+  fi
   ensure_json "$f" '{}'
   backup "$f"
   jq --arg cmd "bash '$GUARD' --gemini" "$GEMINI_UNGUARD"'
@@ -1172,7 +1208,11 @@ cline_hook() {
 write_cline() { # $1 = hooks directory
   local f="$1/$CLINE_HOOK_FILE"
   have_cline || { note "cline   skipped (Cline not installed)"; return; }
-  [ "$DO_HOOK" -eq 1 ] || { note "cline   skipped (--no-hook; Cline gets no rules, only the guard)"; return; }
+  if [ "$DO_HOOK" -eq 0 ]; then
+    if owned_remove "$f"; then note "cline   guard removed ($f — --no-hook)"
+    else note "cline   skipped (--no-hook; Cline gets no rules, only the guard)"; fi
+    return 0
+  fi
   cline_hook | owned_write cline "$f" || return 0
   note "cline   $f  (guard only, deny-only)"
   note "        Cline has no per-command allowlist; a deny ends the whole run"
